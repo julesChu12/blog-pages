@@ -1,0 +1,746 @@
+<!DOCTYPE html><html dir="ltr" lang="zh-CN" class="overflow-y-scroll scroll-smooth"> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="canonical" href="https://blog.yunmengspace.com/posts/go/slice-from-creation-to-growth/"><meta name="generator" content="Astro v6.4.2"><!-- Primary meta --><title>从创建到扩容：重新理解 Go Slice | 开发与阅读</title><meta name="title" content="从创建到扩容：重新理解 Go Slice | 开发与阅读"><meta name="description" content="从字面量、make 和底层数组出发，结合共享、append、浅拷贝与 Go 运行时源码，理清切片从创建到扩容的过程。"><meta name="author" content="博主"><link rel="sitemap" href="/sitemap-index.xml"><!-- Open Graph --><meta property="og:type" content="website"><meta property="og:site_name" content="开发与阅读"><meta property="og:title" content="从创建到扩容：重新理解 Go Slice | 开发与阅读"><meta property="og:description" content="从字面量、make 和底层数组出发，结合共享、append、浅拷贝与 Go 运行时源码，理清切片从创建到扩容的过程。"><meta property="og:url" content="https://blog.yunmengspace.com/posts/go/slice-from-creation-to-growth/"><meta property="og:image" content="https://blog.yunmengspace.com/og.png"><!-- Twitter / X --><meta property="twitter:card" content="summary_large_image"><meta property="twitter:url" content="https://blog.yunmengspace.com/posts/go/slice-from-creation-to-growth/"><meta property="twitter:title" content="从创建到扩容：重新理解 Go Slice | 开发与阅读"><meta property="twitter:description" content="从字面量、make 和底层数组出发，结合共享、append、浅拷贝与 Go 运行时源码，理清切片从创建到扩容的过程。"><meta property="twitter:image" content="https://blog.yunmengspace.com/og.png"><!-- RSS autodiscovery --><link rel="alternate" type="application/rss+xml" title="开发与阅读" href="https://blog.yunmengspace.com/rss.xml"><!-- Filled at runtime by theme.ts to match the current background colour --><meta name="theme-color" content=""><!-- Extra head content injected by child layouts (e.g. JSON-LD, article meta) -->  <meta property="og:type" content="article"> <meta property="article:published_time" content="2026-11-10T08:49:00.000Z"><script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"从创建到扩容：重新理解 Go Slice | 开发与阅读","datePublished":"2026-11-10T08:49:00.000Z","author":[{"@type":"Person","name":"博主"}]}</script> <!--
+      Inline FOUC-prevention script: sets data-theme on <html> before
+      the browser paints. Runs synchronously, no defer/async.
+    --><script>
+      (function () {
+        const stored = localStorage.getItem("theme");
+        const prefersDark = window.matchMedia(
+          "(prefers-color-scheme: dark)"
+        ).matches;
+        const theme = stored ?? (prefersDark ? "dark" : "light");
+        const root = document.firstElementChild;
+        root?.setAttribute("data-theme", theme);
+        root?.classList.toggle("dark", theme === "dark");
+        // Expose value so theme.ts can skip re-detection.
+        window.__theme = { value: theme };
+      })();
+    </script><meta name="astro-view-transitions-enabled" content="true"><meta name="astro-view-transitions-fallback" content="animate"><script type="module" src="/_astro/ClientRouter.astro_astro_type_script_index_0_lang.CAqDO0tx.js"></script><link rel="stylesheet" href="/_astro/Footer.C-2ZO8c0.css">
+<style>@keyframes astroFadeInOut{0%{opacity:1}to{opacity:0}}@keyframes astroFadeIn{0%{opacity:0;mix-blend-mode:plus-lighter}to{opacity:1;mix-blend-mode:plus-lighter}}@keyframes astroFadeOut{0%{opacity:1;mix-blend-mode:plus-lighter}to{opacity:0;mix-blend-mode:plus-lighter}}@keyframes astroSlideFromRight{0%{transform:translate(100%)}}@keyframes astroSlideFromLeft{0%{transform:translate(-100%)}}@keyframes astroSlideToRight{to{transform:translate(100%)}}@keyframes astroSlideToLeft{to{transform:translate(-100%)}}@media(prefers-reduced-motion){::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}[data-astro-transition-scope]{animation:none!important}}
+</style><style>[data-astro-transition-scope="astro-36ssibgs-1"] { view-transition-name: go; }@layer astro { ::view-transition-old(go) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(go) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(go) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(go) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-2"] { view-transition-name: slice; }@layer astro { ::view-transition-old(slice) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(slice) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(slice) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(slice) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-3"] { view-transition-name: \5185\5B58\7BA1\7406; }@layer astro { ::view-transition-old(\5185\5B58\7BA1\7406) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(\5185\5B58\7BA1\7406) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(\5185\5B58\7BA1\7406) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(\5185\5B58\7BA1\7406) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-4"] { view-transition-name: \590D\4E60; }@layer astro { ::view-transition-old(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style></head> <body class="bg-background font-app text-foreground selection:bg-accent/75 selection:text-accent-foreground flex min-h-svh flex-col">    <a id="skip-to-content" href="#main-content" class="bg-background text-accent absolute inset-s-16 -top-full z-50 px-3 py-2 backdrop-blur-lg transition-all focus:top-4"> 跳转到正文 </a> <header class="app-layout flex flex-col items-center justify-between sm:flex-row"> <div class="border-border bg-background relative flex w-full items-baseline justify-between border-b py-4 sm:items-center sm:py-6"> <a href="/" class="absolute py-1 text-xl leading-8 font-semibold whitespace-nowrap sm:static sm:my-auto sm:text-2xl sm:leading-none"> 开发与阅读 </a> <nav id="nav-menu" class="flex w-full flex-col items-center sm:ms-2 sm:flex-row sm:justify-end sm:space-x-4 sm:py-0"> <button id="menu-btn" class="focus-outline self-end p-2 sm:hidden" aria-label="打开菜单" aria-expanded="false" aria-controls="menu-items" data-label-open="打开菜单" data-label-close="关闭菜单"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="hidden" viewBox="0 0 24 24" id="close-icon"><path stroke="none" d="M0 0h24v24H0z" /><path d="M18 6 6 18M6 6l12 12" /></svg> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="icon icon-tabler icons-tabler-outline icon-tabler-menu-deep" viewBox="0 0 24 24" id="menu-icon"><path stroke="none" d="M0 0h24v24H0z" /><path d="M4 6h16M7 12h13M10 18h10" /></svg> </button> <ul id="menu-items" class="[&>li>a]:hover:text-accent mt-4 hidden w-44 grid-cols-2 place-content-center gap-2 sm:mt-0 sm:flex sm:w-auto sm:gap-x-5 sm:gap-y-0 sm:[&>li]:h-8 [&>li>a]:block [&>li>a]:px-4 [&>li>a]:py-3 [&>li>a]:text-center [&>li>a]:font-medium sm:[&>li>a]:px-2 sm:[&>li>a]:py-1"> <li class="col-span-2"> <a href="/posts/" class="active-nav"> 文章 </a> </li> <li class="col-span-2"> <a href="/categories/">
+栏目
+</a> </li> <li class="col-span-2"> <a href="/about/"> 关于 </a> </li> <li class="col-span-2"> <a href="/archives/" title="归档" aria-label="归档" class="group inline-flex items-center gap-1 hover:text-accent focus-outline flex size-full justify-center p-3 sm:relative sm:size-8 sm:p-0">  <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="hidden sm:absolute sm:top-1/2 sm:left-1/2 sm:block sm:size-6 sm:-translate-x-1/2 sm:-translate-y-1/2" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4" /></svg> <span class="sm:sr-only">归档</span>  </a> </li> <li class="col-span-1 flex items-center justify-center"> <a href="/search/" title="搜索" aria-label="搜索" class="group inline-flex items-center gap-1 hover:text-accent focus-outline relative size-8">  <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-1/2 left-1/2 size-6 -translate-x-1/2 -translate-y-1/2" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M3 10a7 7 0 1 0 14 0 7 7 0 1 0-14 0M21 21l-6-6" /></svg> <span class="sr-only">搜索</span>  </a> </li> <li class="col-span-1 flex items-center justify-center"> <button id="theme-btn" class="focus-outline hover:[&>svg]:stroke-accent relative size-12 p-4 sm:size-8" title="切换深浅色" aria-label="auto" aria-live="polite"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-[50%] left-[50%] translate-[-50%] scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M12 3h.393a7.5 7.5 0 0 0 7.92 12.446A9 9 0 1 1 12 2.992z" /></svg> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-[50%] left-[50%] translate-[-50%] scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M14.828 14.828a4 4 0 1 0-5.656-5.656 4 4 0 0 0 5.656 5.656M6.343 17.657l-1.414 1.414M6.343 6.343 4.929 4.929M17.657 6.343l1.414-1.414M17.657 17.657l1.414 1.414M4 12H2M12 4V2M20 12h2M12 20v2" /></svg> </button> </li> </ul> </nav> </div> </header> <script type="module">function c(){const e=document.querySelector("#menu-btn"),t=document.querySelector("#menu-items"),n=document.querySelector("#menu-icon"),s=document.querySelector("#close-icon");if(!e||!t||!n||!s)return;const a=e.dataset.labelOpen??"Open menu",l=e.dataset.labelClose??"Close menu";e.addEventListener("click",()=>{const o=e.getAttribute("aria-expanded")==="true";e.setAttribute("aria-expanded",o?"false":"true"),e.setAttribute("aria-label",o?a:l),t.classList.toggle("hidden"),t.classList.toggle("grid"),n.classList.toggle("hidden"),s.classList.toggle("hidden")})}c();document.addEventListener("astro:after-swap",c);</script> <div class="app-layout flex items-center justify-start"><a id="back-button" href="/" class="group inline-flex items-center gap-1 hover:text-accent focus-outline hover:text-foreground/75 -ms-2 mt-8 mb-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-6 rtl:rotate-180" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="m15 6-6 6 6 6" /></svg><span>返回列表</span> </a></div><script type="module">function o(){const t=document.querySelector("#back-button"),e=sessionStorage.getItem("backUrl");e&&t&&(t.href=e)}document.addEventListener("astro:page-load",o);o();</script> <main id="main-content" class="app-layout" data-pagefind-body> <a href="/categories/go/" class="text-accent mb-4 block w-fit text-sm font-medium" data-pagefind-filter="栏目"> Go </a>  <h1 style="view-transition-name:u004eceu00521bu005efau005230u006269u005bb9u00ff1au0091cdu0065b0u007406u0089e3-go-slice" class="text-foreground inline-block text-2xl leading-snug font-bold sm:text-3xl"> 从创建到扩容：重新理解 Go Slice </h1> <div class="my-2 flex items-center gap-2"> <div class="text-muted-foreground flex items-center gap-x-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-6 min-w-5.5" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM16 3v4M8 3v4M4 11h16M7 14h.013M10.01 14h.005M13.01 14h.005M16.015 14h.005M13.015 17h.005M7.01 17h.005M10.01 17h.005" /></svg>  <time class="text-sm sm:text-base" datetime="2026-11-10T08:49:00.000Z"> 2026 年 11 月 10 日 </time> </div> <span aria-hidden="true" class="text-muted-foreground max-sm:hidden hidden">
+|
+</span>  </div> <article id="article" class="mt-8 w-full app-prose max-w-app prose-pre:bg-(--shiki-light-bg) dark:prose-pre:bg-(--shiki-dark-bg)"> <p>复习 Go slice 时，我发现自己能写 <code>make</code> 和 <code>append</code>，但遇到几个切片共用数组时，仍然需要停下来判断：追加会不会改到原数据？容量不足时到底复制了什么？</p>
+<p>要回答这些问题，需要沿着 slice 的生命周期，把<strong>切片值、底层数组和元素可能引用的对象</strong>分别看清楚。本文从创建切片开始，一直追踪到扩容后的复制与初始化。</p>
+<p>语言语义以 Go 规范为准；涉及容量增长、存储位置和运行时调用的观察，基于 <strong>Go 1.25.8、macOS arm64</strong>。这些实现细节可能随着版本、架构和编译选项变化。</p>
+<h2 id="目录">目录</h2>
+<p></p><details><summary>展开文章目录</summary><p></p>
+<ul>
+<li><a href="#%E5%88%9B%E5%BB%BA%E5%88%87%E7%89%87%E5%85%88%E5%88%86%E6%B8%85%E5%88%87%E7%89%87%E5%80%BC%E5%92%8C%E5%BA%95%E5%B1%82%E6%95%B0%E7%BB%84">创建切片：先分清切片值和底层数组</a></li>
+<li><a href="#%E5%88%87%E7%89%87%E8%8C%83%E5%9B%B4%E7%BB%93%E6%9D%9F%E4%BD%8D%E7%BD%AE%E4%B8%8D%E5%8C%85%E5%90%AB%E5%9C%A8%E5%86%85">切片范围：结束位置不包含在内</a></li>
+<li><a href="#%E8%B5%8B%E5%80%BC%E4%BC%A0%E5%8F%82%E5%92%8C-append%E5%93%AA%E4%BA%9B%E6%95%B0%E6%8D%AE%E5%85%B1%E4%BA%AB">赋值、传参和 append：哪些数据共享？</a></li>
+<li><a href="#%E6%96%B0%E6%95%B0%E7%BB%84%E4%B8%8D%E4%B8%80%E5%AE%9A%E5%B8%A6%E6%9D%A5%E7%8B%AC%E7%AB%8B%E5%AF%B9%E8%B1%A1%E6%B5%85%E6%8B%B7%E8%B4%9D">新数组不一定带来独立对象：浅拷贝</a></li>
+<li><a href="#%E6%89%A9%E5%AE%B9%E7%AD%96%E7%95%A5%E5%87%8F%E5%B0%91%E6%90%AC%E8%BF%81%E4%B8%8E%E9%A2%84%E7%95%99%E7%A9%BA%E9%97%B4%E7%9A%84%E5%8F%96%E8%88%8D">扩容策略：减少搬迁与预留空间的取舍</a></li>
+<li><a href="#go-1258%E5%80%99%E9%80%89%E5%AE%B9%E9%87%8F%E5%92%8C%E6%9C%80%E7%BB%88%E5%AE%B9%E9%87%8F">Go 1.25.8：候选容量和最终容量</a></li>
+<li><a href="#%E4%B8%80%E6%AC%A1%E6%89%A9%E5%AE%B9%E5%88%A4%E6%96%AD%E5%A4%8D%E5%88%B6%E5%86%99%E5%85%A5%E5%92%8C%E6%B8%85%E9%9B%B6">一次扩容：判断、复制、写入和清零</a></li>
+<li><a href="#%E7%BC%96%E8%AF%91%E5%99%A8%E8%BF%90%E8%A1%8C%E6%97%B6%E5%92%8C%E5%86%85%E5%AD%98%E5%88%86%E9%85%8D%E7%9A%84%E8%BE%B9%E7%95%8C">编译器、运行时和内存分配的边界</a></li>
+<li><a href="#%E5%B8%A6%E8%B5%B0%E7%9A%84%E5%88%A4%E6%96%AD%E6%96%B9%E6%B3%95">带走的判断方法</a></li>
+<li><a href="#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99">参考资料</a></li>
+</ul>
+<p></p></details><p></p>
+<h2 id="创建切片先分清切片值和底层数组">创建切片：先分清切片值和底层数组</h2>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">s</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">10</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">20</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">30</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span></code></pre>
+<p>切片值记录它引用的数组位置、长度和容量：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="text"><code><span class="line"><span>s：len=3、cap=3 ──→ 底层数组 [10 20 30]</span></span></code></pre>
+<p>可以把这个字面量在语义上理解为：先准备一个 <code>[3]int</code> 数组，再取得它的切片。<code>s</code> 是 <code>[]int</code>，并不是 <code>[3]int</code>；对 <code>s</code> 赋值也不会自动复制数组中的所有元素。</p>
+<p><code>len</code> 决定当前可以直接索引的元素范围；<code>cap</code> 表示从切片起点开始，可以通过重新切片使用的底层数组范围。当前机器上 <code>unsafe.Sizeof(s)</code> 是 24 字节，不包含底层数组；数组中的三个 <code>int</code> 各占 8 字节，元素空间也是 24 字节。两者相同只是这个例子的巧合。</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">var</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">     // nil 切片：len=0，cap=0</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{}    </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 非 nil 空切片：len=0，cap=0</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">c</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> make</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">([]</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">5</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)</span></span></code></pre>
+<p><code>a</code> 和 <code>b</code> 打印时都可能显示为 <code>[]</code>，但 <code>a == nil</code> 为 <code>true</code>，<code>b == nil</code> 为 <code>false</code>。<code>c</code> 的长度为 2、容量为 5：前两个元素已经存在且可直接索引，值初始为 <code>0</code>；容量表示底层数组能够容纳 5 个元素。</p>
+<p><code>make([]int, 2, 5)</code> 所需的底层元素空间，在本机是 <code>5 × 8 = 40</code> 字节。如果实际走到堆分配，分配器的槽位可能更大，但切片的容量仍是 5。长度、容量以<strong>元素数</strong>计，分配器管理的槽位以<strong>字节</strong>计。</p>
+<p>日常代码中，已知结果数量并准备按索引填充，可以使用 <code>make([]T, n)</code>；如果只知道数量上限、打算逐个追加，可以使用 <code>make([]T, 0, n)</code>。例如：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">numbers</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">3</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">4</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">even</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> make</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">([]</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">len</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">numbers</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">))</span></span>
+<span class="line"></span>
+<span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">for</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> _</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">n</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic"> range</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> numbers</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> {</span></span>
+<span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">	if</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> n</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">%</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> ==</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> {</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">		even</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> =</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> append</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">even</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">n</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">	}</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// even = [2 4]</span></span></code></pre>
+<p>如果这里写成 <code>make([]int, len(numbers))</code> 再 <code>append</code>，前面已经存在的四个零值元素不会被覆盖，而会保留在结果中。</p>
+<h2 id="切片范围结束位置不包含在内">切片范围：结束位置不包含在内</h2>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">base</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">3</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">4</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">part</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> base</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">3</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">] </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [2 3]</span></span></code></pre>
+<p><code>base[1:3]</code> 包含索引 1，不包含索引 3；长度为 <code>3 - 1 = 2</code>。这种左闭右开规则使相邻区间可以使用同一个边界，例如 <code>base[:2]</code> 和 <code>base[2:]</code> 正好分开，不重复也不遗漏。</p>
+<p>起点省略时默认为 0：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> base</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">]   </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 等价于 base[0:2]；len=2，cap=4</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> base</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">] </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// len=2，cap=2</span></span></code></pre>
+<p>普通切片表达式 <code>base[:2]</code> 保留从起点开始的剩余容量；完整切片表达式 <code>base[:2:2]</code> 把容量限制为 2。<strong>限制容量不会立即复制数组</strong>，<code>a</code>、<code>b</code> 仍然引用 <code>base</code> 的底层数组。<a href="https://go.dev/ref/spec#Full_slice_expressions">Go 规范对完整切片表达式的定义</a>规定了 <code>low:high:max</code> 的长度和容量计算。</p>
+<h2 id="赋值传参和-append哪些数据共享">赋值、传参和 append：哪些数据共享？</h2>
+<p>先看容量足够的情况：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">base</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">3</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">4</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> base</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">]     </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [1 2]，len=2，cap=4</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> append</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">9</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">) </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 新长度为 3，仍未超过容量 4</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">] </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 100</span></span>
+<span class="line"></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">base</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">) </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [100 2 9 4]</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)    </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [100 2]</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)    </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [100 2 9]</span></span></code></pre>
+<p><code>append</code> 复用原数组，将 <code>9</code> 写在索引 2，覆盖原来的 <code>3</code>。<code>b[0] = 100</code> 修改的是同一个数组，因此 <code>base</code> 和 <code>a</code> 也能看到。<code>a</code> 的长度仍是 2，所以它打印时不包含索引 2 的元素。</p>
+<p>再把 <code>a</code> 的容量限制为 2：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">base</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">3</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">4</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> base</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">]   </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [1 2]，len=2，cap=2</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> append</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">9</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">) </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 需要长度 3，超过容量 2</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">] </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 100</span></span>
+<span class="line"></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">base</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">) </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [1 2 3 4]</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)    </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [1 2]</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)    </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// [100 2 9]</span></span></code></pre>
+<p>这次 <code>append</code> 需要新的底层数组，先保留 <code>a</code> 的两个元素，再追加 <code>9</code>。因此对 <code>b[0]</code> 的修改不会改变 <code>base</code> 或 <code>a</code>。两组实验可以运行：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="sh"><code><span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">go</span><span style="--shiki-light:#2B5581;--shiki-dark:#ECC48D"> run</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD"> "</span><span style="--shiki-light:#22863A;--shiki-dark:#ECC48D">examples/go/day01/slice-sharing/main.go</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span></span></code></pre>
+<p>切片赋值和函数传参同样需要区分切片值与数组。<code>b := a</code> 复制切片值；<code>b = b[:1]</code> 只改变 <code>b</code> 的长度，但通过 <code>b[0]</code> 修改共享数组，仍可能被 <code>a[0]</code> 看到。函数参数收到的也是切片值副本，因此函数内部执行 <code>s = append(s, x)</code> 后，如果调用者需要新的长度或数组，应返回新切片并让调用者接收。</p>
+<h2 id="新数组不一定带来独立对象浅拷贝">新数组不一定带来独立对象：浅拷贝</h2>
+<p>数组元素是整数时，扩容复制整数值；如果元素是指针，复制的是指针值：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">type</span><span style="--shiki-light:#6F42C1;--shiki-dark:#D6DEEB"> Cell</span><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic"> struct</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{ </span><span style="--shiki-light:#24292EFF;--shiki-dark:#BAEBE2">Value</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> }</span></span>
+<span class="line"></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">cell</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> &#x26;</span><span style="--shiki-light:#6F42C1;--shiki-dark:#D6DEEB">Cell</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#24292EFF;--shiki-dark:#BAEBE2">Value</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">: </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA">*</span><span style="--shiki-light:#6F42C1;--shiki-dark:#D6DEEB">Cell</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">cell</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> append</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">:</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">], </span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA">&#x26;</span><span style="--shiki-light:#6F42C1;--shiki-dark:#D6DEEB">Cell</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#24292EFF;--shiki-dark:#BAEBE2">Value</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">: </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">})</span></span>
+<span class="line"></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">].</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">Value</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> =</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 100</span></span>
+<span class="line"></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA">&#x26;</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">] </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">==</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> &#x26;</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">b</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">]) </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// false：数组槽位不同</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">] </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">==</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> b</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">])   </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// true：指向同一个 Cell</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">a</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">].</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">Value</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)     </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 100</span></span></code></pre>
+<p><code>a</code> 和 <code>b</code> 的底层数组分开了，但第一个元素仍保存相同的对象地址。<code>b[0].Value = 100</code> 修改的是共同指向的 <code>Cell</code>。如果要让对象也独立，需要根据数据结构继续复制指针指向的对象；对象内部还有切片、map 或指针时，也要明确哪些数据需要独立。</p>
+<p><code>copy(dst, src)</code> 同样复制元素值，并不会自动递归复制元素引用的对象。它复制的数量是 <code>len(dst)</code> 和 <code>len(src)</code> 中较小的值，而不是依据 <code>cap(dst)</code>：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">src</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> []</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">3</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">dst</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> make</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">([]</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">3</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)</span></span>
+<span class="line"></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fmt</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Println</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">copy</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">dst</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">src</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)) </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 0：dst 的长度为 0</span></span></code></pre>
+<h2 id="扩容策略减少搬迁与预留空间的取舍">扩容策略：减少搬迁与预留空间的取舍</h2>
+<p>逐个追加元素时，如果每次都只增长到刚好够用，下一次追加又会触发增长。对 10,000 个元素，本地 <code>slice-growth-design</code> 示例得到：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>策略</th><th align="right">逻辑增长次数</th><th align="right">旧长度累计值</th><th align="right">最终容量</th><th align="right">空余槽位</th></tr></thead><tbody><tr><td>每次刚好够用的模型</td><td align="right">10000</td><td align="right">49995000</td><td align="right">10000</td><td align="right">0</td></tr><tr><td>翻倍增长模型</td><td align="right">15</td><td align="right">16383</td><td align="right">16384</td><td align="right">6384</td></tr><tr><td>约 1.25 倍增长模型</td><td align="right">38</td><td align="right">41344</td><td align="right">10349</td><td align="right">349</td></tr><tr><td>Go 1.25.8 本机观察</td><td align="right">19</td><td align="right">32415</td><td align="right">12288</td><td align="right">2288</td></tr></tbody></table>
+<p>前三行仅模拟逻辑容量；最后一行实际执行 Go <code>append</code>，并在容量变化时累计旧长度。表中不是耗时基准，也不能把逻辑增长次数直接等同于堆分配次数。把最终元素数换成其他值，空余容量的比较也可能不同。</p>
+<p>这个实验说明了基本取舍：增长较大，通常可以减少增长和旧元素搬迁的频率，但可能保留更多暂时未用的空间；增长较小则可能更频繁地搬迁。实际运行开销还需要结合元素类型、分配、GC 和基准测试判断。</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="sh"><code><span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">go</span><span style="--shiki-light:#2B5581;--shiki-dark:#ECC48D"> run</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD"> "</span><span style="--shiki-light:#22863A;--shiki-dark:#ECC48D">examples/go/day01/slice-growth-design/main.go</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span></span></code></pre>
+<h2 id="go-1258候选容量和最终容量">Go 1.25.8：候选容量和最终容量</h2>
+<p>在本机 Go 1.25.8 的 <a href="https://github.com/golang/go/blob/go1.25.8/src/runtime/slice.go#L289"><code>nextslicecap</code></a> 中，概括普通增长路径：</p>
+<ul>
+<li>所需新长度超过旧容量两倍时，候选容量从所需新长度开始。</li>
+<li>旧容量小于 256 时，候选容量按两倍增长。</li>
+<li>旧容量达到 256 后，通过公式从约两倍逐渐向 1.25 倍过渡。</li>
+</ul>
+<p>以 <code>[]int</code> 旧容量为 512、追加一个元素为例：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="text"><code><span class="line"><span>新长度：513</span></span>
+<span class="line"><span>候选容量：512 + (512 + 3 × 256) / 4 = 832</span></span>
+<span class="line"><span>候选字节数：832 × 8 = 6656</span></span>
+<span class="line"><span>分配器尺寸取整：6656 → 6784 字节</span></span>
+<span class="line"><span>最终容量：6784 ÷ 8 = 848 个 int</span></span></code></pre>
+<p><code>832</code> 是增长公式的候选结果，<code>848</code> 是本机考虑分配器尺寸后的观察结果。Go 规范并不保证扩容倍率或最终容量数值；业务代码应依赖追加后的数据和容量足够使用，而不是写死某个扩容结果。源码中的 <a href="https://github.com/golang/go/blob/go1.25.8/src/runtime/msize.go#L16"><code>roundupsize</code></a> 负责按分配器规格处理字节大小。</p>
+<h2 id="一次扩容判断复制写入和清零">一次扩容：判断、复制、写入和清零</h2>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">s</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> make</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">([]</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">s</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">], </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">s</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">] </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 10</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">20</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">old</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> s</span></span>
+<span class="line"></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">s</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> =</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> append</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">s</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">30</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)</span></span></code></pre>
+<p>追加后所需长度为 3，大于旧容量 2。在当前 Go 1.25.8 的普通编译路径中，编译器会生成“新长度与旧容量”的比较；对于需要运行时增长的路径，再调用 <code>growslice</code>。容量足够时则不必走这条增长路径。具体条件和栈缓冲优化可从 <a href="https://github.com/golang/go/blob/go1.25.8/src/cmd/compile/internal/ssagen/ssa.go#L3685"><code>state.append</code></a> 查看。</p>
+<p>本机这次实验中新容量为 4。针对 <code>[]int</code>，可以把新数组分为三段：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="text"><code><span class="line"><span>索引：          0    1    2    3</span></span>
+<span class="line"><span>新数组：      [10   20 | 30 |  0]</span></span>
+<span class="line"><span>               └──────┘ └──┘ └──┘</span></span>
+<span class="line"><span>               旧元素    新增  剩余容量</span></span></code></pre>
+<ol>
+<li><a href="https://github.com/golang/go/blob/go1.25.8/src/runtime/slice.go#L133"><code>growslice</code></a> 准备新空间，并通过 <code>memmove</code> 复制旧长度范围内的元素。</li>
+<li>追加代码写入 <code>30</code>；<code>growslice</code> 的参数包含追加数量，但不包含这个具体的元素值。</li>
+<li>对无指针元素的当前路径，剩余容量部分需要清零，因为之后可以通过重新切片访问；即将被追加代码覆盖的区域则不必在 <code>growslice</code> 中先清零再覆盖。</li>
+</ol>
+<p>如果元素包含指针，运行时需要按指针类型处理初始化，并在写屏障启用时进行相应的批量屏障处理，避免 GC 漏掉需要追踪的引用。完整的标记和回收机制留到 GC 专题。</p>
+<p>追加完成后：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="text"><code><span class="line"><span>old → 旧数组 [10 20]，len=2，cap=2</span></span>
+<span class="line"><span>s   → 新数组 [10 20 30]，len=3，cap=4</span></span></code></pre>
+<p>扩容不会自动让旧数组立刻消失：只要 <code>old</code> 或其他可达引用仍需使用它，就必须保留。堆对象不再可达后才有资格被 GC 回收，回收时间不等于 <code>append</code> 执行时间。</p>
+<h2 id="编译器运行时和内存分配的边界">编译器、运行时和内存分配的边界</h2>
+<p>字面量和 <code>make</code> 的类型、已知数量可以在编译时分析；实际存储方式则与生命周期、大小和编译优化有关。不能看到 <code>make</code> 就断言一定发生堆分配，也不能把“返回切片”单独作为所有情况下必然堆分配的规则。</p>
+<p>在本机、保留 <code>//go:noinline</code> 函数边界的独立实验中，<code>localSum</code> 的 <code>make([]int, 4)</code> 报告为 <code>does not escape</code>，<code>returnedSlice</code> 的同一写法报告为 <code>escapes to heap</code>。复现：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="sh"><code><span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">go</span><span style="--shiki-light:#2B5581;--shiki-dark:#ECC48D"> build</span><span style="--shiki-light:#2B5581;--shiki-dark:#82AAFF"> -o</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD"> "</span><span style="--shiki-light:#22863A;--shiki-dark:#ECC48D">/tmp/slice-escape</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span><span style="--shiki-light:#2B5581;--shiki-dark:#82AAFF"> -gcflags=</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span><span style="--shiki-light:#22863A;--shiki-dark:#ECC48D">-m=2</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span><span style="--shiki-light:#24292EFF;--shiki-dark:#F78C6C"> \</span></span>
+<span class="line"><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">  "</span><span style="--shiki-light:#22863A;--shiki-dark:#ECC48D">examples/go/day01/slice-escape/main.go</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span></span></code></pre>
+<p>编译结果还可用 <code>-gcflags="-S"</code> 查看。VS Code 的 Go 调试器也可以在断点暂停后打开反汇编视图；调试构建通常关闭部分优化，所以指令可能与普通构建不同。</p>
+<p>当代码实际进入堆分配路径时，本机的字面量案例观察到 <code>runtime.newobject</code>，返回 <code>make</code> 的案例观察到 <code>runtime.makeslice</code>；两者在本版本中都可调用 <code>mallocgc</code>。小对象按尺寸类别寻找可用槽位，本地缓存不足时再向其他运行时管理层补充。不是每次 <code>append</code> 都会调用这些函数，也不是每次堆分配都会向操作系统申请新内存。</p>
+<h2 id="带走的判断方法">带走的判断方法</h2>
+<p>遇到一段 slice 代码时，先画出切片值和底层数组，再按顺序问：</p>
+<ol>
+<li>每个切片的 <code>len</code>、<code>cap</code> 是多少？它们是否引用同一个数组？</li>
+<li><code>append</code> 后所需长度是否超过容量？返回值赋给了谁？</li>
+<li>如果数组分开，元素是否仍含指针或其他引用，导致对象继续共享？</li>
+<li>性能问题是否有实际测量？容量和分配结论是否只适用于特定 Go 版本、架构与编译条件？</li>
+</ol>
+<p>这些问题能先确定程序行为，再决定是否值得继续看编译器、运行时源码或性能数据。</p>
+<h2 id="参考资料">参考资料</h2>
+<ul>
+<li><a href="https://go.dev/ref/spec#Slice_types">Go 规范：切片类型</a></li>
+<li><a href="https://go.dev/ref/spec#Appending_and_copying_slices">Go 规范：append 与 copy</a></li>
+<li><a href="https://go.dev/blog/slices-intro">Go 官方博客：Go Slices: usage and internals</a></li>
+<li><a href="https://github.com/golang/go/blob/go1.25.8/src/runtime/slice.go">Go 1.25.8：runtime/slice.go</a></li>
+<li><a href="https://go.dev/doc/gc-guide">Go 官方文档：垃圾回收指南</a></li>
+</ul> </article> <hr class="my-8 border-dashed">  <div id="btt-btn-container" class="fixed inset-e-4 bottom-8 z-50 md:sticky md:inset-e-auto md:float-end md:me-1 translate-y-14 opacity-0 transition duration-500"> <button data-button="back-to-top" class="group bg-background relative px-2 py-1 size-14 rounded-full shadow-xl md:h-8 md:w-fit md:rounded-md md:shadow-none md:focus-visible:rounded-none md:bg-background/35 md:bg-clip-padding md:backdrop-blur-lg"> <span id="progress-indicator" class="absolute inset-0 -z-10 block size-14 scale-110 rounded-full bg-transparent md:hidden md:h-8 md:rounded-md"></span> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block rotate-90 md:hidden" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 12h14M5 12l6 6M5 12l6-6" /></svg> <span class="group-hover:text-accent sr-only text-sm md:not-sr-only"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M12 5v14M16 9l-4-4M8 9l4-4" /></svg> 回到顶部 </span> </button> </div> <script data-astro-rerun>
+  function backToTop() {
+    const rootElement = document.documentElement;
+    const btnContainer = document.querySelector("#btt-btn-container");
+    const backToTopBtn = document.querySelector("[data-button='back-to-top']");
+    const progressIndicator = document.querySelector("#progress-indicator");
+
+    if (!rootElement || !btnContainer || !backToTopBtn || !progressIndicator)
+      return;
+
+    backToTopBtn.addEventListener("click", () => {
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+    });
+
+    let lastVisible = null;
+    function handleScroll() {
+      const scrollTotal = rootElement.scrollHeight - rootElement.clientHeight;
+      const scrollTop = rootElement.scrollTop;
+      const scrollPercent = Math.floor((scrollTop / scrollTotal) * 100);
+
+      progressIndicator.style.setProperty(
+        "background-image",
+        `conic-gradient(var(--accent), var(--accent) ${scrollPercent}%, transparent ${scrollPercent}%)`
+      );
+
+      const isVisible = scrollTop / scrollTotal > 0.3;
+
+      if (isVisible !== lastVisible) {
+        btnContainer.classList.toggle("opacity-100", isVisible);
+        btnContainer.classList.toggle("translate-y-0", isVisible);
+        btnContainer.classList.toggle("opacity-0", !isVisible);
+        btnContainer.classList.toggle("translate-y-14", !isVisible);
+        lastVisible = isVisible;
+      }
+    }
+
+    let ticking = false;
+    document.addEventListener("scroll", () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          handleScroll();
+          ticking = false;
+        });
+        ticking = true;
+      }
+    });
+  }
+  backToTop();
+</script> <ul class="mt-4 mb-8 flex flex-wrap gap-4 sm:my-8"> <li> <a href="/tags/go/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-1"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> Go </a> </li><li> <a href="/tags/slice/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> slice </a> </li><li> <a href="/tags/内存管理/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-3"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> 内存管理 </a> </li><li> <a href="/tags/复习/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-4"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> 复习 </a> </li> </ul>  <hr class="my-8 border-dashed"> <div data-pagefind-ignore class="my-8 grid grid-cols-1 gap-6 sm:grid-cols-2">   </div> </main> <footer class="app-layout mt-auto"> <div class="border-border flex flex-col items-center justify-between border-t py-6 sm:flex-row-reverse sm:py-4"> <div class="flex flex-wrap items-center gap-1">  </div> <div class="my-2 flex flex-col items-center whitespace-nowrap sm:flex-row"> <span> &#169; 2026</span> <span class="hidden sm:inline">&nbsp;|&nbsp;</span> <span>保留所有权利。</span> </div> </div> </footer>   <script type="module">const c="theme",n="light",o="dark";function s(){const e=localStorage.getItem(c);return e||(window.matchMedia("(prefers-color-scheme: dark)").matches?o:n)}let t=window.__theme?.value??s();function a(){localStorage.setItem(c,t),m()}function m(){const e=document.firstElementChild;e?.setAttribute("data-theme",t),e?.classList.toggle("dark",t===o),document.querySelector("#theme-btn")?.setAttribute("aria-label",t===o?"切换至浅色":"切换至深色");const r=window.getComputedStyle(document.body).backgroundColor;document.querySelector("meta[name='theme-color']")?.setAttribute("content",r)}function d(){m(),document.querySelector("#theme-btn")?.addEventListener("click",()=>{t=t===n?o:n,a()})}d();document.addEventListener("astro:after-swap",d);document.addEventListener("astro:before-swap",e=>{const r=document.querySelector("meta[name='theme-color']")?.getAttribute("content");r&&e.newDocument.querySelector("meta[name='theme-color']")?.setAttribute("content",r)});window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change",({matches:e})=>{t=e?o:n,a()});</script> </body> </html> <script data-astro-rerun>
+  function addHeadingLinks() {
+    const headings = Array.from(
+      document.querySelectorAll("h2, h3, h4, h5, h6")
+    );
+    for (const heading of headings) {
+      heading.classList.add("group");
+      const link = document.createElement("a");
+      link.className =
+        "heading-link ms-2 no-underline opacity-75 md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100";
+      link.href = "#" + heading.id;
+
+      const span = document.createElement("span");
+      span.ariaHidden = "true";
+      span.innerText = "#";
+      link.appendChild(span);
+      heading.appendChild(link);
+    }
+  }
+  addHeadingLinks();
+
+  function attachCopyButtons() {
+    const copyButtonLabel = "复制";
+    const codeBlocks = Array.from(document.querySelectorAll("pre"));
+
+    for (const codeBlock of codeBlocks) {
+      const wrapper = document.createElement("div");
+      wrapper.style.position = "relative";
+
+      const computedStyle = getComputedStyle(codeBlock);
+      const hasFileNameOffset =
+        computedStyle.getPropertyValue("--file-name-offset").trim() !== "";
+
+      const topClass = hasFileNameOffset
+        ? "top-(--file-name-offset)"
+        : "-top-3";
+
+      const copyButton = document.createElement("button");
+      copyButton.className = `copy-code absolute end-3 ${topClass} rounded bg-muted border border-muted px-2 py-1 text-xs leading-4 text-foreground font-medium`;
+      copyButton.innerHTML = copyButtonLabel;
+      codeBlock.setAttribute("tabindex", "0");
+      codeBlock.appendChild(copyButton);
+
+      codeBlock?.parentNode?.insertBefore(wrapper, codeBlock);
+      wrapper.appendChild(codeBlock);
+
+      copyButton.addEventListener("click", async () => {
+        await copyCode(codeBlock, copyButton);
+      });
+    }
+
+    async function copyCode(block, button) {
+      const code = block.querySelector("code");
+      const text = code?.innerText;
+
+      try {
+        await navigator.clipboard.writeText(text ?? "");
+        button.innerText = "已复制";
+      } catch {
+        button.innerText = "请手动复制";
+      }
+
+      setTimeout(() => {
+        button.innerText = copyButtonLabel;
+      }, 700);
+    }
+  }
+  attachCopyButtons();
+
+  /** Accessible image lightbox for article images. */
+  function initLightbox() {
+    const article = document.getElementById("article");
+    if (!article) return;
+
+    const prefersReducedMotion = () =>
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let overlay = null;
+    let lastFocused = null;
+
+    // Defer attribute mutations so they don't push the LCP timestamp.
+    // Event listeners below use delegation and don't need the attributes to exist yet.
+    requestAnimationFrame(() => {
+      const images = Array.from(article.querySelectorAll("img"));
+      for (const image of images) {
+        if (image.closest("a")) continue;
+        image.setAttribute("role", "button");
+        image.setAttribute("tabindex", "0");
+        image.setAttribute("aria-haspopup", "dialog");
+        image.setAttribute(
+          "aria-label",
+          image.alt ? `放大图片：${image.alt}` : "放大图片"
+        );
+      }
+    });
+
+    function open(src, alt, trigger) {
+      if (overlay) return;
+      lastFocused = trigger ?? document.activeElement;
+
+      overlay = document.createElement("div");
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.setAttribute("aria-label", alt ? `图片预览：${alt}` : "图片预览");
+      overlay.className =
+        "fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/70 backdrop-blur-sm opacity-0 transition-opacity duration-200 motion-reduce:transition-none";
+
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.setAttribute("aria-label", "关闭图片预览");
+      closeButton.className =
+        "absolute end-4 top-4 rounded p-2 text-3xl leading-none text-white";
+      closeButton.innerHTML = "&#10005;";
+      closeButton.addEventListener("click", close);
+
+      const image = document.createElement("img");
+      image.src = src;
+      image.alt = "";
+      image.className =
+        "max-h-[90dvh] max-w-[90dvw] cursor-default object-contain";
+
+      overlay.append(closeButton, image);
+      overlay.addEventListener("click", e => {
+        if (e.target === overlay && currentScale <= 1) close();
+      });
+
+      let currentScale = 1;
+      let translateX = 0;
+      let translateY = 0;
+      let initialDist = 0;
+      let initialScale = 1;
+      let panStartX = 0;
+      let panStartY = 0;
+      let panStartTranslateX = 0;
+      let panStartTranslateY = 0;
+      let lastTapTime = 0;
+
+      function applyTransform() {
+        image.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+      }
+
+      function resetTransform() {
+        currentScale = 1;
+        translateX = 0;
+        translateY = 0;
+        image.style.transform = "";
+      }
+
+      overlay.addEventListener(
+        "touchstart",
+        e => {
+          const t = e.touches;
+          if (t.length === 2) {
+            initialDist = Math.hypot(
+              t[1].clientX - t[0].clientX,
+              t[1].clientY - t[0].clientY
+            );
+            initialScale = currentScale;
+          } else if (t.length === 1) {
+            const now = Date.now();
+            if (now - lastTapTime < 300) {
+              e.preventDefault();
+              if (currentScale > 1) {
+                resetTransform();
+              } else {
+                currentScale = 2;
+                translateX = 0;
+                translateY = 0;
+                applyTransform();
+              }
+              lastTapTime = 0;
+              panStartX = t[0].clientX;
+              panStartY = t[0].clientY;
+              panStartTranslateX = translateX;
+              panStartTranslateY = translateY;
+            } else {
+              lastTapTime = now;
+              if (currentScale > 1) {
+                panStartX = t[0].clientX;
+                panStartY = t[0].clientY;
+                panStartTranslateX = translateX;
+                panStartTranslateY = translateY;
+              }
+            }
+          }
+        },
+        { passive: false }
+      );
+
+      overlay.addEventListener(
+        "touchmove",
+        e => {
+          const t = e.touches;
+          if (t.length === 2) {
+            e.preventDefault();
+            const dist = Math.hypot(
+              t[1].clientX - t[0].clientX,
+              t[1].clientY - t[0].clientY
+            );
+            currentScale = Math.min(
+              4,
+              Math.max(1, initialScale * (dist / initialDist))
+            );
+            applyTransform();
+          } else if (t.length === 1) {
+            if (currentScale > 1) {
+              e.preventDefault();
+              translateX =
+                panStartTranslateX + (t[0].clientX - panStartX) / currentScale;
+              translateY =
+                panStartTranslateY + (t[0].clientY - panStartY) / currentScale;
+              const maxX = Math.max(
+                0,
+                (image.clientWidth - overlay.clientWidth / currentScale) / 2
+              );
+              const maxY = Math.max(
+                0,
+                (image.clientHeight - overlay.clientHeight / currentScale) / 2
+              );
+              translateX = Math.min(maxX, Math.max(-maxX, translateX));
+              translateY = Math.min(maxY, Math.max(-maxY, translateY));
+              applyTransform();
+            } else {
+              e.preventDefault();
+            }
+          }
+        },
+        { passive: false }
+      );
+
+      overlay.addEventListener("touchend", e => {
+        if (e.touches.length === 0 && currentScale <= 1.05) {
+          resetTransform();
+        }
+      });
+
+      overlay.addEventListener("touchcancel", e => {
+        if (e.touches.length === 0 && currentScale <= 1.05) {
+          resetTransform();
+        }
+      });
+
+      document.body.appendChild(overlay);
+      document.body.style.overflow = "hidden";
+      document.addEventListener("keydown", onKeyDown);
+      window.__closeLightbox = close;
+
+      requestAnimationFrame(() => overlay?.classList.add("opacity-100"));
+      closeButton.focus();
+    }
+
+    function close() {
+      if (!overlay) return;
+      const el = overlay;
+      overlay = null;
+      window.__closeLightbox = null;
+
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = "";
+      lastFocused?.focus();
+      lastFocused = null;
+
+      if (prefersReducedMotion()) {
+        el.remove();
+        return;
+      }
+      const remove = () => el.remove();
+      el.addEventListener("transitionend", remove, { once: true });
+      setTimeout(remove, 250); // fallback in case transitionend never fires
+      el.classList.remove("opacity-100");
+    }
+
+    function onKeyDown(e) {
+      if (e.key === "Escape") {
+        close();
+      } else if (e.key === "Tab") {
+        trapFocus(e);
+      }
+    }
+
+    // Keep keyboard focus inside the open dialog.
+    function trapFocus(e) {
+      if (!overlay) return;
+      const focusables = overlay.querySelectorAll(
+        'a[href], button, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+
+    function triggerFromEvent(e) {
+      const image = e.target.closest("img");
+      if (!image || !article.contains(image) || image.closest("a")) return null;
+      return image;
+    }
+
+    function activate(image) {
+      open(image.currentSrc || image.src, image.alt, image);
+    }
+
+    article.addEventListener("click", e => {
+      const image = triggerFromEvent(e);
+      if (!image) return;
+      e.preventDefault();
+      activate(image);
+    });
+
+    article.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+      const image = triggerFromEvent(e);
+      if (!image) return;
+      e.preventDefault();
+      activate(image);
+    });
+  }
+  initLightbox();
+
+  if (!window.__lightboxSwapBound) {
+    window.__lightboxSwapBound = true;
+    document.addEventListener("astro:before-swap", () =>
+      window.__closeLightbox?.()
+    );
+  }
+
+  document.addEventListener("astro:after-swap", () =>
+    window.scrollTo({ left: 0, top: 0, behavior: "instant" })
+  );
+</script>
