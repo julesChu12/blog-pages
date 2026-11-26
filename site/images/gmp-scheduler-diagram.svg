@@ -1,0 +1,176 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 890" width="1200" height="890" role="img" aria-label="Go GMP 调度器结构图" style="font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6168"/>
+    </marker>
+    <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3f8f5c"/>
+    </marker>
+    <marker id="arB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a86b8"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="890" rx="12" fill="#fbfaf8"/>
+
+  <!-- 全局队列 -->
+  <text x="600" y="26" text-anchor="middle" font-size="15" font-weight="650" fill="#1f2328">全局队列</text>
+  <text x="600" y="42" text-anchor="middle" font-size="11.5" fill="#5b6168" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">sched.runq</text>
+
+  <rect x="400" y="52" width="400" height="72" rx="12" fill="#edf1f4" stroke="#c3ccd5" stroke-width="1.4"/>
+  <circle cx="500" cy="88" r="19" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.5"/>
+  <text x="500" y="93" text-anchor="middle" font-size="13" font-weight="650" fill="#fff">G</text>
+  <circle cx="570" cy="88" r="19" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.5"/>
+  <text x="570" y="93" text-anchor="middle" font-size="13" font-weight="650" fill="#fff">G</text>
+  <circle cx="640" cy="88" r="19" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.5"/>
+  <text x="640" y="93" text-anchor="middle" font-size="13" font-weight="650" fill="#fff">G</text>
+  <text x="700" y="94" font-size="16" fill="#8a9099">…</text>
+
+  <g transform="translate(98 0)">
+    <rect x="588" y="128" width="24" height="21" rx="4" fill="#d9b44a" stroke="#a97c1c" stroke-width="1.2"/>
+    <path d="M593,128 v-6 a7,7 0 0 1 14,0 v6" fill="none" stroke="#a97c1c" stroke-width="2"/>
+    <text x="620" y="144" font-size="11.5" fill="#5b6168" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">sched.lock</text>
+  </g>
+
+  <text x="824" y="76" font-size="11.5" fill="#5b6168">入队包括本地溢出、让出、系统调用返回等</text>
+  <text x="824" y="96" font-size="11.5" fill="#5b6168">本地无 G 时可批量取，单批最多 128 个</text>
+  <text x="824" y="116" font-size="11.5" fill="#5b6168">schedtick % 61 == 0 时优先尝试取 1 个</text>
+
+  <path d="M600,124 V154 H235 V204" stroke="#8a9099" stroke-width="1.4" stroke-dasharray="5 4" fill="none" marker-end="url(#ar)"/>
+  <path d="M565,154 V204" stroke="#8a9099" stroke-width="1.4" stroke-dasharray="5 4" fill="none" marker-end="url(#ar)"/>
+  <text x="400" y="175" text-anchor="middle" font-size="10.5" fill="#8a9099">从全局取 G</text>
+
+  <!-- P0 -->
+  <rect x="110" y="210" width="250" height="250" rx="12" fill="#fff" stroke="#d8c79a" stroke-width="1.6"/>
+  <text x="126" y="238" font-size="15" font-weight="650" fill="#1f2328">P0</text>
+  <text x="344" y="237" text-anchor="end" font-size="10.5" fill="#8a9099" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">_Prunning</text>
+
+  <rect x="126" y="250" width="218" height="38" rx="8" fill="#fdf6e3" stroke="#e0ad3e" stroke-width="1.3"/>
+  <text x="138" y="274" font-size="11.5" fill="#a97c1c" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">runnext</text>
+  <circle cx="322" cy="269" r="14" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.4"/>
+  <text x="322" y="274" text-anchor="middle" font-size="11" font-weight="650" fill="#fff">G</text>
+
+  <rect x="126" y="298" width="218" height="96" rx="8" fill="#fff" stroke="#d5dbe1" stroke-width="1.3"/>
+  <text x="138" y="318" font-size="11.5" fill="#3a4048" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">runq[256]</text>
+  <rect x="286" y="305" width="46" height="17" rx="4" fill="#e9f4ec"/>
+  <text x="309" y="318" text-anchor="middle" font-size="10.5" font-weight="650" fill="#2c6b42">无锁</text>
+  <circle cx="162" cy="362" r="16" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.4"/>
+  <text x="162" y="367" text-anchor="middle" font-size="11.5" font-weight="650" fill="#fff">G</text>
+  <circle cx="206" cy="362" r="16" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.4"/>
+  <text x="206" y="367" text-anchor="middle" font-size="11.5" font-weight="650" fill="#fff">G</text>
+  <circle cx="250" cy="362" r="16" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.4"/>
+  <text x="250" y="367" text-anchor="middle" font-size="11.5" font-weight="650" fill="#fff">G</text>
+  <text x="292" y="368" font-size="15" fill="#8a9099">…</text>
+
+  <text x="138" y="424" font-size="11.5" fill="#3a4048" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m = M0</text>
+  <text x="138" y="442" font-size="10.5" fill="#8a9099">M0 持有 P0，可执行用户 Go 代码</text>
+
+  <rect x="16" y="251" width="79" height="36" rx="8" fill="#e9f4ec" stroke="#a9cfb6"/>
+  <text x="55.5" y="265" text-anchor="middle" font-size="11" fill="#2c6b42" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">go f()</text>
+  <text x="55.5" y="279" text-anchor="middle" font-size="10" fill="#2c6b42">通常入队</text>
+  <path d="M95,269 H125" stroke="#3f8f5c" stroke-width="1.6" fill="none" marker-end="url(#arG)"/>
+
+  <!-- P1 -->
+  <rect x="440" y="210" width="250" height="250" rx="12" fill="#fff" stroke="#d8c79a" stroke-width="1.6"/>
+  <text x="456" y="238" font-size="15" font-weight="650" fill="#1f2328">P1</text>
+  <text x="674" y="237" text-anchor="end" font-size="10.5" fill="#8a9099" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">_Prunning</text>
+
+  <rect x="456" y="250" width="218" height="38" rx="8" fill="#fdf6e3" stroke="#e0ad3e" stroke-width="1.3"/>
+  <text x="468" y="274" font-size="11.5" fill="#a97c1c" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">runnext</text>
+  <text x="652" y="274" text-anchor="middle" font-size="10.5" fill="#a97c1c">空</text>
+
+  <rect x="456" y="298" width="218" height="96" rx="8" fill="#fff" stroke="#d5dbe1" stroke-width="1.3"/>
+  <text x="468" y="318" font-size="11.5" fill="#3a4048" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">runq[256]</text>
+  <rect x="616" y="305" width="46" height="17" rx="4" fill="#e9f4ec"/>
+  <text x="639" y="318" text-anchor="middle" font-size="10.5" font-weight="650" fill="#2c6b42">无锁</text>
+  <circle cx="492" cy="362" r="16" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.4"/>
+  <text x="492" y="367" text-anchor="middle" font-size="11.5" font-weight="650" fill="#fff">G</text>
+  <circle cx="536" cy="362" r="16" fill="#3f8f5c" stroke="#2c6b42" stroke-width="1.4"/>
+  <text x="536" y="367" text-anchor="middle" font-size="11.5" font-weight="650" fill="#fff">G</text>
+
+  <text x="468" y="424" font-size="11.5" fill="#3a4048" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m = M2</text>
+  <text x="468" y="442" font-size="10.5" fill="#8a9099">本地队列随 P 保留</text>
+
+  <path d="M270,468 C300,528 500,528 530,468" stroke="#3f8f5c" stroke-width="1.6" stroke-dasharray="5 4" marker-start="url(#arG)" marker-end="url(#arG)" fill="none"/>
+  <rect x="336" y="536" width="128" height="21" rx="10" fill="#fbfaf8" stroke="#a9cfb6" stroke-width="1"/>
+  <text x="400" y="551" text-anchor="middle" font-size="10.5" font-weight="650" fill="#2c6b42">stealWork 约一半</text>
+
+  <!-- 待领池 -->
+  <rect x="758" y="196" width="316" height="286" rx="12" fill="#faf9f6" stroke="#c3ccd5" stroke-width="1.4" stroke-dasharray="6 5"/>
+  <text x="774" y="222" font-size="13.5" font-weight="650" fill="#1f2328">待领池</text>
+  <text x="774" y="240" font-size="10.5" fill="#5b6168" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">sched.pidle · sched.npidle</text>
+
+  <rect x="786" y="254" width="260" height="196" rx="10" fill="#fff" stroke="#d8c79a" stroke-width="1.4"/>
+  <text x="800" y="278" font-size="13.5" font-weight="650" fill="#1f2328">P2</text>
+  <text x="1032" y="278" text-anchor="end" font-size="10.5" fill="#8a9099" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">_Pidle</text>
+
+  <rect x="800" y="288" width="232" height="34" rx="7" fill="#fdf6e3" stroke="#e0ad3e" stroke-width="1.1"/>
+  <text x="812" y="310" font-size="11" fill="#a97c1c" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">runnext</text>
+  <text x="1020" y="310" text-anchor="end" font-size="10.5" fill="#a97c1c">空</text>
+
+  <rect x="800" y="332" width="232" height="58" rx="7" fill="#fff" stroke="#d5dbe1" stroke-width="1.1"/>
+  <text x="812" y="352" font-size="11" fill="#3a4048" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">runq[256]</text>
+  <text x="916" y="374" text-anchor="middle" font-size="10.5" fill="#8a9099">空</text>
+
+  <text x="800" y="414" font-size="11" fill="#3a4048" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m = nil</text>
+  <text x="800" y="434" font-size="10.5" fill="#8a9099">等待 M 领取</text>
+
+  <!-- P3 -->
+  <rect x="738" y="504" width="132" height="46" rx="8" fill="#fdf6e3" stroke="#d8c79a" stroke-width="1.2"/>
+  <text x="750" y="522" font-size="15" font-weight="650" fill="#1f2328">P3</text>
+  <text x="858" y="522" text-anchor="end" font-size="10.5" fill="#5b6168" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">_Psyscall</text>
+  <text x="750" y="540" font-size="10.5" fill="#1f2328" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m = nil</text>
+  <path d="M804,580 V550" stroke="#8a9099" stroke-width="1.4" stroke-dasharray="4 3" fill="none" marker-end="url(#ar)"/>
+
+  <!-- M 行 -->
+  <path d="M235,460 L235,574" stroke="#4a86b8" stroke-width="1.8" fill="none" marker-end="url(#arB)"/>
+  <text x="247" y="522" font-size="12.5" fill="#3a4048">临时绑定</text>
+  <rect x="155" y="580" width="160" height="86" rx="10" fill="#4a86b8" stroke="#2f6591" stroke-width="1.5"/>
+  <text x="235" y="606" text-anchor="middle" font-size="13.5" font-weight="650" fill="#fff">M0</text>
+  <text x="235" y="626" text-anchor="middle" font-size="10.5" fill="#dceaf5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m.p = P0</text>
+  <text x="235" y="645" text-anchor="middle" font-size="10.5" fill="#dceaf5">正在跑用户 G</text>
+
+  <path d="M565,460 L565,574" stroke="#4a86b8" stroke-width="1.8" fill="none" marker-end="url(#arB)"/>
+  <text x="577" y="522" font-size="12.5" fill="#3a4048">临时绑定</text>
+  <rect x="485" y="580" width="160" height="86" rx="10" fill="#4a86b8" stroke="#2f6591" stroke-width="1.5"/>
+  <text x="565" y="606" text-anchor="middle" font-size="13.5" font-weight="650" fill="#fff">M2</text>
+  <text x="565" y="626" text-anchor="middle" font-size="10.5" fill="#dceaf5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m.p = P1</text>
+  <text x="565" y="645" text-anchor="middle" font-size="10.5" fill="#dceaf5">正在跑用户 G</text>
+
+  <rect x="700" y="580" width="208" height="86" rx="10" fill="#9dc0d8" stroke="#2f6591" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="804" y="604" text-anchor="middle" font-size="13" font-weight="650" fill="#1c3d57">M1 · 卡在 syscall</text>
+  <text x="804" y="624" text-anchor="middle" font-size="10.5" fill="#22475f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m.p = nil</text>
+  <text x="804" y="642" text-anchor="middle" font-size="10.5" fill="#22475f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m.oldp = P3</text>
+  <text x="804" y="659" text-anchor="middle" font-size="10" fill="#22475f">返回时可尝试取回原 P</text>
+
+  <rect x="935" y="580" width="160" height="86" rx="10" fill="#cfd6dd" stroke="#8a9099" stroke-width="1.4"/>
+  <text x="1015" y="604" text-anchor="middle" font-size="13" font-weight="650" fill="#3a4048">M3 · 停车</text>
+  <text x="1015" y="624" text-anchor="middle" font-size="10.5" fill="#4a5158" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">m.p = nil</text>
+  <text x="1015" y="642" text-anchor="middle" font-size="10.5" fill="#4a5158" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">sched.midle</text>
+  <text x="1015" y="659" text-anchor="middle" font-size="10" fill="#4a5158">等 note 叫醒</text>
+
+  <!-- OS 调度器 -->
+  <path d="M235,666 L235,696" stroke="#8a9099" stroke-width="1.3" fill="none" marker-end="url(#ar)"/>
+  <path d="M565,666 L565,696" stroke="#8a9099" stroke-width="1.3" fill="none" marker-end="url(#ar)"/>
+  <path d="M804,666 L804,696" stroke="#8a9099" stroke-width="1.3" fill="none" marker-end="url(#ar)"/>
+  <path d="M1015,666 L1015,696" stroke="#8a9099" stroke-width="1.3" fill="none" marker-end="url(#ar)"/>
+
+  <rect x="110" y="700" width="985" height="52" rx="10" fill="#8a6bab" stroke="#6b4c8a" stroke-width="1.4"/>
+  <text x="602" y="732" text-anchor="middle" font-size="14" font-weight="650" fill="#fff">操作系统调度器</text>
+
+  <!-- CPU -->
+  <path d="M235,752 L235,778" stroke="#8a9099" stroke-width="1.3" fill="none" marker-end="url(#ar)"/>
+  <path d="M495,752 L495,778" stroke="#8a9099" stroke-width="1.3" fill="none" marker-end="url(#ar)"/>
+  <path d="M755,752 L755,778" stroke="#8a9099" stroke-width="1.3" fill="none" marker-end="url(#ar)"/>
+  <path d="M1015,752 L1015,778" stroke="#8a9099" stroke-width="1.3" fill="none" marker-end="url(#ar)"/>
+
+  <rect x="150" y="782" width="170" height="54" rx="8" fill="#c0564a" stroke="#8f3b32" stroke-width="1.3"/>
+  <text x="235" y="815" text-anchor="middle" font-size="12.5" font-weight="650" fill="#fff">CPU0</text>
+  <rect x="410" y="782" width="170" height="54" rx="8" fill="#c0564a" stroke="#8f3b32" stroke-width="1.3"/>
+  <text x="495" y="815" text-anchor="middle" font-size="12.5" font-weight="650" fill="#fff">CPU1</text>
+  <rect x="670" y="782" width="170" height="54" rx="8" fill="#c0564a" stroke="#8f3b32" stroke-width="1.3"/>
+  <text x="755" y="815" text-anchor="middle" font-size="12.5" font-weight="650" fill="#fff">CPU2</text>
+  <rect x="930" y="782" width="170" height="54" rx="8" fill="#c0564a" stroke="#8f3b32" stroke-width="1.3"/>
+  <text x="1015" y="815" text-anchor="middle" font-size="12.5" font-weight="650" fill="#fff">CPU3</text>
+
+  <text x="600" y="866" text-anchor="middle" font-size="11.5" fill="#5b6168">有效 P 数 = GOMAXPROCS（Go 1.25.8 在 Linux 容器里会自动参考 cgroup CPU 配额）</text>
+</svg>

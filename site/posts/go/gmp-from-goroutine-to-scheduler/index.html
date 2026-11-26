@@ -1,0 +1,803 @@
+<!DOCTYPE html><html dir="ltr" lang="zh-CN" class="overflow-y-scroll scroll-smooth"> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="canonical" href="https://blog.yunmengspace.com/posts/go/gmp-from-goroutine-to-scheduler/"><meta name="generator" content="Astro v6.4.2"><!-- Primary meta --><title>从一段阻塞代码到 GMP：Go 调度器是怎么跑起来的 | 开发与阅读</title><meta name="title" content="从一段阻塞代码到 GMP：Go 调度器是怎么跑起来的 | 开发与阅读"><meta name="description" content="不先背 G、M、P 的定义。从为什么几万个 goroutine 只用几个线程、为什么两层模型不够用非要加 P 出发，结合 Go 1.25.8 源码与本地实测，串起队列、syscall 交接、netpoll、findRunnable 与容器限核。"><meta name="author" content="博主"><link rel="sitemap" href="/sitemap-index.xml"><!-- Open Graph --><meta property="og:type" content="website"><meta property="og:site_name" content="开发与阅读"><meta property="og:title" content="从一段阻塞代码到 GMP：Go 调度器是怎么跑起来的 | 开发与阅读"><meta property="og:description" content="不先背 G、M、P 的定义。从为什么几万个 goroutine 只用几个线程、为什么两层模型不够用非要加 P 出发，结合 Go 1.25.8 源码与本地实测，串起队列、syscall 交接、netpoll、findRunnable 与容器限核。"><meta property="og:url" content="https://blog.yunmengspace.com/posts/go/gmp-from-goroutine-to-scheduler/"><meta property="og:image" content="https://blog.yunmengspace.com/og.png"><!-- Twitter / X --><meta property="twitter:card" content="summary_large_image"><meta property="twitter:url" content="https://blog.yunmengspace.com/posts/go/gmp-from-goroutine-to-scheduler/"><meta property="twitter:title" content="从一段阻塞代码到 GMP：Go 调度器是怎么跑起来的 | 开发与阅读"><meta property="twitter:description" content="不先背 G、M、P 的定义。从为什么几万个 goroutine 只用几个线程、为什么两层模型不够用非要加 P 出发，结合 Go 1.25.8 源码与本地实测，串起队列、syscall 交接、netpoll、findRunnable 与容器限核。"><meta property="twitter:image" content="https://blog.yunmengspace.com/og.png"><!-- RSS autodiscovery --><link rel="alternate" type="application/rss+xml" title="开发与阅读" href="https://blog.yunmengspace.com/rss.xml"><!-- Filled at runtime by theme.ts to match the current background colour --><meta name="theme-color" content=""><!-- Extra head content injected by child layouts (e.g. JSON-LD, article meta) -->  <meta property="og:type" content="article"> <meta property="article:published_time" content="2026-11-26T07:52:00.000Z"><script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"从一段阻塞代码到 GMP：Go 调度器是怎么跑起来的 | 开发与阅读","datePublished":"2026-11-26T07:52:00.000Z","author":[{"@type":"Person","name":"博主"}]}</script> <!--
+      Inline FOUC-prevention script: sets data-theme on <html> before
+      the browser paints. Runs synchronously, no defer/async.
+    --><script>
+      (function () {
+        const stored = localStorage.getItem("theme");
+        const prefersDark = window.matchMedia(
+          "(prefers-color-scheme: dark)"
+        ).matches;
+        const theme = stored ?? (prefersDark ? "dark" : "light");
+        const root = document.firstElementChild;
+        root?.setAttribute("data-theme", theme);
+        root?.classList.toggle("dark", theme === "dark");
+        // Expose value so theme.ts can skip re-detection.
+        window.__theme = { value: theme };
+      })();
+    </script><meta name="astro-view-transitions-enabled" content="true"><meta name="astro-view-transitions-fallback" content="animate"><script type="module" src="/_astro/ClientRouter.astro_astro_type_script_index_0_lang.CAqDO0tx.js"></script><link rel="stylesheet" href="/_astro/Footer.D_6VzwdI.css">
+<style>@keyframes astroFadeInOut{0%{opacity:1}to{opacity:0}}@keyframes astroFadeIn{0%{opacity:0;mix-blend-mode:plus-lighter}to{opacity:1;mix-blend-mode:plus-lighter}}@keyframes astroFadeOut{0%{opacity:1;mix-blend-mode:plus-lighter}to{opacity:0;mix-blend-mode:plus-lighter}}@keyframes astroSlideFromRight{0%{transform:translate(100%)}}@keyframes astroSlideFromLeft{0%{transform:translate(-100%)}}@keyframes astroSlideToRight{to{transform:translate(100%)}}@keyframes astroSlideToLeft{to{transform:translate(-100%)}}@media(prefers-reduced-motion){::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}[data-astro-transition-scope]{animation:none!important}}
+</style><style>[data-astro-transition-scope="astro-36ssibgs-1"] { view-transition-name: go; }@layer astro { ::view-transition-old(go) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(go) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(go) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(go) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-2"] { view-transition-name: \5E76\53D1; }@layer astro { ::view-transition-old(\5E76\53D1) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(\5E76\53D1) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(\5E76\53D1) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(\5E76\53D1) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-3"] { view-transition-name: gmp; }@layer astro { ::view-transition-old(gmp) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(gmp) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(gmp) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(gmp) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-4"] { view-transition-name: \8C03\5EA6\5668; }@layer astro { ::view-transition-old(\8C03\5EA6\5668) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(\8C03\5EA6\5668) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(\8C03\5EA6\5668) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(\8C03\5EA6\5668) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-5"] { view-transition-name: \590D\4E60; }@layer astro { ::view-transition-old(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-5"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-5"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-5"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-5"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-5"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-5"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-5"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-5"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style></head> <body class="bg-background font-app text-foreground selection:bg-accent/75 selection:text-accent-foreground flex min-h-svh flex-col">    <a id="skip-to-content" href="#main-content" class="bg-background text-accent absolute inset-s-16 -top-full z-50 px-3 py-2 backdrop-blur-lg transition-all focus:top-4"> 跳转到正文 </a> <header class="app-layout flex flex-col items-center justify-between sm:flex-row"> <div class="border-border bg-background relative flex w-full items-baseline justify-between border-b py-4 sm:items-center sm:py-6"> <a href="/" class="absolute py-1 text-xl leading-8 font-semibold whitespace-nowrap sm:static sm:my-auto sm:text-2xl sm:leading-none"> 开发与阅读 </a> <nav id="nav-menu" class="flex w-full flex-col items-center sm:ms-2 sm:flex-row sm:justify-end sm:space-x-4 sm:py-0"> <button id="menu-btn" class="focus-outline self-end p-2 sm:hidden" aria-label="打开菜单" aria-expanded="false" aria-controls="menu-items" data-label-open="打开菜单" data-label-close="关闭菜单"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="hidden" viewBox="0 0 24 24" id="close-icon"><path stroke="none" d="M0 0h24v24H0z" /><path d="M18 6 6 18M6 6l12 12" /></svg> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="icon icon-tabler icons-tabler-outline icon-tabler-menu-deep" viewBox="0 0 24 24" id="menu-icon"><path stroke="none" d="M0 0h24v24H0z" /><path d="M4 6h16M7 12h13M10 18h10" /></svg> </button> <ul id="menu-items" class="[&>li>a]:hover:text-accent mt-4 hidden w-44 grid-cols-2 place-content-center gap-2 sm:mt-0 sm:flex sm:w-auto sm:gap-x-5 sm:gap-y-0 sm:[&>li]:h-8 [&>li>a]:block [&>li>a]:px-4 [&>li>a]:py-3 [&>li>a]:text-center [&>li>a]:font-medium sm:[&>li>a]:px-2 sm:[&>li>a]:py-1"> <li class="col-span-2"> <a href="/posts/" class="active-nav"> 文章 </a> </li> <li class="col-span-2"> <a href="/categories/">
+栏目
+</a> </li> <li class="col-span-2"> <a href="/about/"> 关于 </a> </li> <li class="col-span-2"> <a href="/archives/" title="归档" aria-label="归档" class="group inline-flex items-center gap-1 hover:text-accent focus-outline flex size-full justify-center p-3 sm:relative sm:size-8 sm:p-0">  <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="hidden sm:absolute sm:top-1/2 sm:left-1/2 sm:block sm:size-6 sm:-translate-x-1/2 sm:-translate-y-1/2" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4" /></svg> <span class="sm:sr-only">归档</span>  </a> </li> <li class="col-span-1 flex items-center justify-center"> <a href="/search/" title="搜索" aria-label="搜索" class="group inline-flex items-center gap-1 hover:text-accent focus-outline relative size-8">  <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-1/2 left-1/2 size-6 -translate-x-1/2 -translate-y-1/2" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M3 10a7 7 0 1 0 14 0 7 7 0 1 0-14 0M21 21l-6-6" /></svg> <span class="sr-only">搜索</span>  </a> </li> <li class="col-span-1 flex items-center justify-center"> <button id="theme-btn" class="focus-outline hover:[&>svg]:stroke-accent relative size-12 p-4 sm:size-8" title="切换深浅色" aria-label="auto" aria-live="polite"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-[50%] left-[50%] translate-[-50%] scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M12 3h.393a7.5 7.5 0 0 0 7.92 12.446A9 9 0 1 1 12 2.992z" /></svg> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-[50%] left-[50%] translate-[-50%] scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M14.828 14.828a4 4 0 1 0-5.656-5.656 4 4 0 0 0 5.656 5.656M6.343 17.657l-1.414 1.414M6.343 6.343 4.929 4.929M17.657 6.343l1.414-1.414M17.657 17.657l1.414 1.414M4 12H2M12 4V2M20 12h2M12 20v2" /></svg> </button> </li> </ul> </nav> </div> </header> <script type="module">function c(){const e=document.querySelector("#menu-btn"),t=document.querySelector("#menu-items"),n=document.querySelector("#menu-icon"),s=document.querySelector("#close-icon");if(!e||!t||!n||!s)return;const a=e.dataset.labelOpen??"Open menu",l=e.dataset.labelClose??"Close menu";e.addEventListener("click",()=>{const o=e.getAttribute("aria-expanded")==="true";e.setAttribute("aria-expanded",o?"false":"true"),e.setAttribute("aria-label",o?a:l),t.classList.toggle("hidden"),t.classList.toggle("grid"),n.classList.toggle("hidden"),s.classList.toggle("hidden")})}c();document.addEventListener("astro:after-swap",c);</script> <div class="app-layout flex items-center justify-start"><a id="back-button" href="/" class="group inline-flex items-center gap-1 hover:text-accent focus-outline hover:text-foreground/75 -ms-2 mt-8 mb-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-6 rtl:rotate-180" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="m15 6-6 6 6 6" /></svg><span>返回列表</span> </a></div><script type="module">function o(){const t=document.querySelector("#back-button"),e=sessionStorage.getItem("backUrl");e&&t&&(t.href=e)}document.addEventListener("astro:page-load",o);o();</script> <main id="main-content" class="app-layout" data-pagefind-body> <a href="/categories/go/" class="text-accent mb-4 block w-fit text-sm font-medium" data-pagefind-filter="栏目"> Go </a>  <h1 style="view-transition-name:u004eceu004e00u006bb5u00963bu00585eu004ee3u007801u005230-gmpu00ff1a-go-u008c03u005ea6u005668u00662fu00600eu004e48u008dd1u008d77u006765u007684" class="text-foreground inline-block text-2xl leading-snug font-bold sm:text-3xl"> 从一段阻塞代码到 GMP：Go 调度器是怎么跑起来的 </h1> <div class="my-2 flex items-center gap-2"> <div class="text-muted-foreground flex items-center gap-x-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-6 min-w-5.5" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM16 3v4M8 3v4M4 11h16M7 14h.013M10.01 14h.005M13.01 14h.005M16.015 14h.005M13.015 17h.005M7.01 17h.005M10.01 17h.005" /></svg>  <time class="text-sm sm:text-base" datetime="2026-11-26T07:52:00.000Z"> 2026 年 11 月 26 日 </time> </div> <span aria-hidden="true" class="text-muted-foreground max-sm:hidden hidden">
+|
+</span>  </div> <article id="article" class="mt-8 w-full app-prose max-w-app prose-pre:bg-(--shiki-light-bg) dark:prose-pre:bg-(--shiki-dark-bg)"> <p>在上一篇<a href="/posts/go/io-models-from-stuck-code-to-epoll/">从一段卡住的代码到 epoll</a>的结尾，我们留下了一个结论：</p>
+<blockquote><p>Go 把阻塞从操作系统线程搬到了用户态，让你照着线性阻塞代码写并发，底下跑的却是类似 epoll 的多路复用。</p></blockquote>
+<p>很多文章讲 GMP 喜欢一上来先背三段定义：G 是 goroutine，M 是机器线程，P 是处理器。背完还是不知道：<strong>为什么非要有三个字母，G 和 M 两层不够吗？</strong></p>
+<p>这篇换个顺序。我们先看现象、撞问题，最后再把每个部件的名字对上。所有源码行号和实测输出均基于本机 <strong>Go 1.25.8</strong>。</p>
+<h2 id="目录">目录</h2>
+<p></p><details><summary>展开文章目录</summary><p></p>
+<ul>
+<li><a href="#%E5%85%88%E7%9C%8B%E4%B8%80%E4%B8%AA%E5%8F%8D%E7%9B%B4%E8%A7%89%E7%9A%84%E4%BA%8B%E5%AE%9E">先看一个反直觉的事实</a></li>
+<li><a href="#%E5%A6%82%E6%9E%9C%E5%8F%AA%E6%9C%89-g-%E5%92%8C-m%E4%B8%BA%E4%BB%80%E4%B9%88%E4%B8%A4%E5%B1%82%E4%BC%9A%E6%92%9E%E5%A2%99">如果只有 G 和 M：为什么两层会撞墙？</a></li>
+<li><a href="#%E5%85%88%E6%8A%8A%E6%95%B4%E5%BC%A0%E5%9B%BE%E7%9C%8B%E5%AF%B9%E6%B5%81%E4%BC%A0%E5%9B%BE%E9%87%8C%E7%9A%84%E4%B8%89%E4%B8%AA%E5%B8%B8%E8%A7%81%E9%94%99%E8%AF%AF">先把整张图看对：流传图里的三个常见错误</a></li>
+<li><a href="#%E5%90%8C%E6%A0%B7%E6%98%AF%E5%8D%A1%E4%BD%8F%E4%BA%86%E4%B8%BA%E4%BB%80%E4%B9%88%E6%9C%89%E7%9A%84%E6%B6%A8%E7%BA%BF%E7%A8%8B%E6%9C%89%E7%9A%84%E4%B8%8D%E6%B6%A8">同样是“卡住了”，为什么有的涨线程、有的不涨？</a>
+<ul>
+<li><a href="#%E6%83%85%E5%86%B5-a%E8%AF%BB%E7%A9%BA-channel-%E6%88%96%E7%AD%89%E7%BD%91%E7%BB%9C-socketm-%E5%92%8C-p-%E6%A0%B9%E6%9C%AC%E4%B8%8D%E5%88%86%E5%BC%80">情况 A：读空 channel 或等网络 socket（M 和 P 根本不分开）</a></li>
+<li><a href="#%E6%83%85%E5%86%B5-b%E5%8D%A1%E5%9C%A8%E9%98%BB%E5%A1%9E%E7%B3%BB%E7%BB%9F%E8%B0%83%E7%94%A8%E9%87%8Cm-%E7%9C%9F%E5%8D%A1%E8%BF%9B%E5%86%85%E6%A0%B8p-%E8%A2%AB%E6%8A%A2%E8%B5%B0%E4%BA%A4%E6%8E%A5">情况 B：卡在阻塞系统调用里（M 真卡进内核，P 被抢走交接）</a></li>
+</ul>
+</li>
+<li><a href="#%E4%B8%80%E4%B8%AA%E7%A9%BA%E9%97%B2%E7%9A%84-m-%E6%98%AF%E6%80%8E%E4%B9%88%E6%89%BE%E6%B4%BB%E5%B9%B2%E7%9A%84findrunnable-%E4%B8%BB%E7%BA%BF">一个空闲的 M 是怎么找活干的：<code>findRunnable</code> 主线</a>
+<ul>
+<li><a href="#1-%E5%85%88%E6%A3%80%E6%9F%A5-stw%E5%AE%9A%E6%97%B6%E5%99%A8%E5%92%8C%E5%90%8E%E5%8F%B0%E6%80%A5%E6%B4%BB33913426-%E8%A1%8C">1. 先检查 STW、定时器和后台急活（3391–3426 行）</a></li>
+<li><a href="#2-%E6%AF%8F-61-%E6%AC%A1%E6%8A%BD%E6%9F%A5%E4%B8%80%E6%AC%A1%E5%85%A8%E5%B1%80%E9%98%9F%E5%88%97%E9%98%B2%E6%AD%A2%E9%A5%BF%E6%AD%BB34313438-%E8%A1%8C">2. 每 61 次抽查一次全局队列，防止饿死（3431–3438 行）</a></li>
+<li><a href="#3-%E8%87%AA%E5%B7%B1%E6%9C%AC%E5%9C%B0%E9%98%9F%E5%88%9734573459-%E8%A1%8C">3. 自己本地队列（3457–3459 行）</a></li>
+<li><a href="#4-%E6%9C%AC%E5%9C%B0%E7%A9%BA%E4%BA%86%E5%85%88%E5%8E%BB%E5%85%A8%E5%B1%80%E6%89%B9%E5%8F%91%E4%B8%80%E6%89%B9%E5%86%8D%E9%9D%9E%E9%98%BB%E5%A1%9E%E6%89%AB%E4%B8%80%E7%9C%BC%E7%BD%91%E7%BB%9C34623498-%E8%A1%8C">4. 本地空了：先去全局“批发”一批，再非阻塞扫一眼网络（3462–3498 行）</a></li>
+<li><a href="#5-%E8%BF%9B%E5%85%A5-spinning%E5%8E%BB%E5%85%B6%E4%BB%96-p-%E5%81%B7%E4%B8%80%E5%8D%8A%E5%9B%9E%E6%9D%A535053526-%E8%A1%8C">5. 进入 <code>spinning</code>，去其他 P 偷一半回来（3505–3526 行）</a></li>
+<li><a href="#6-%E8%BF%9E%E5%81%B7%E9%83%BD%E5%81%B7%E4%B8%8D%E5%88%B0%E6%89%93%E6%89%AB%E7%8E%B0%E5%9C%BA%E9%98%B2%E4%B8%A2%E5%94%A4%E9%86%92%E6%9C%80%E5%90%8E%E7%9D%A1%E8%A7%8935323785-%E8%A1%8C">6. 连偷都偷不到：打扫现场、防丢唤醒、最后睡觉（3532–3785 行）</a></li>
+</ul>
+</li>
+<li><a href="#%E4%B8%A4%E4%B8%AA%E9%AB%98%E9%A2%91%E5%B7%A5%E7%A8%8B%E5%9D%91">两个高频工程坑</a>
+<ul>
+<li><a href="#%E5%9D%91%E4%B8%80gomaxprocs-%E4%B8%8E%E5%AE%B9%E5%99%A8-cpu-limit">坑一：<code>GOMAXPROCS</code> 与容器 CPU limit</a></li>
+<li><a href="#%E5%9D%91%E4%BA%8Cgoroutine-%E6%B3%84%E6%BC%8F%E7%9A%84%E7%9C%9F%E5%AE%9E%E4%BB%A3%E4%BB%B7">坑二：goroutine 泄漏的真实代价</a></li>
+</ul>
+</li>
+<li><a href="#%E4%B8%80%E5%BC%A0%E8%A1%A8%E6%94%B6%E5%B0%BE">一张表收尾</a></li>
+<li><a href="#%E5%8F%82%E8%80%83%E6%BA%90%E7%A0%81%E4%B8%8E%E5%AE%9E%E6%B5%8B%E4%BB%A3%E7%A0%81">参考源码与实测代码</a></li>
+</ul>
+<p></p></details><p></p>
+<h2 id="先看一个反直觉的事实">先看一个反直觉的事实</h2>
+<p>十万个 goroutine 同时卡在那里什么都不干，会怎样？</p>
+<p>仓库 <code>examples/go/concurrency/goroutine-cost</code> 里有一段验证代码：起 100,000 个 goroutine，每个都卡在同一个永远不会有数据的无缓冲 channel 上，前后对比 <code>runtime.MemStats</code>：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">never</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> make</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">chan</span><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic"> struct</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">{})</span></span>
+<span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">for</span><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic"> range</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 100</span><span style="--shiki-light:#212121;--shiki-dark:#F78C6C">_</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">000</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> {</span></span>
+<span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">	go</span><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic"> func</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">() { </span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA">&#x3C;-</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">never</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> }()</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span>
+<span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">for</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> runtime</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">NumGoroutine</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">() </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">&#x3C;</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 100</span><span style="--shiki-light:#212121;--shiki-dark:#F78C6C">_</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">000</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">+</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> {</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">	runtime</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Gosched</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">()</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span></code></pre>
+<p>实测输出：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="text"><code><span class="line"><span>GOMAXPROCS      = 10</span></span>
+<span class="line"><span>NumGoroutine    = 100001</span></span>
+<span class="line"><span>创建+阻塞耗时    = 68ms</span></span>
+<span class="line"><span>HeapAlloc 增量   = 55.9 MiB</span></span>
+<span class="line"><span>StackSys 增量    = 195.5 MiB</span></span>
+<span class="line"><span>合计             = 251.4 MiB，平均每个阻塞 G ≈ 2636 字节</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>主 G 仍然在运行，说明 100000 个阻塞 G 没有吃掉任何 P。</span></span></code></pre>
+<p>有两件事值得盯住：</p>
+<ol>
+<li><strong>10 万个阻塞 G 全部创建并停住只花了 68ms</strong>，每个成本约 <strong>2636 字节</strong>（2 KiB 初始栈 + <code>g</code> 结构体 + 挂在 channel 上的 <code>sudog</code> 节点）。</li>
+<li><strong>主 G 照样跑</strong>。那 10 万个 G 并没有各自占着一个操作系统线程。</li>
+</ol>
+<p>怎么停下来的？用 <code>examples/go/concurrency/gmp-who-decides</code> 跑一下（注意必须用 <code>panic</code> + <code>GOTRACEBACK=system</code>，因为 <code>runtime.Stack</code> 内部硬编码覆盖了 <code>GOTRACEBACK</code>，会隐藏 runtime 帧），就能看到卡在 <code>&#x3C;-never</code> 上的 goroutine 完整的栈：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="text"><code><span class="line"><span>goroutine 7 gp=0x140000036c0 m=nil [chan receive]:</span></span>
+<span class="line"><span>runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)</span></span>
+<span class="line"><span>	/Users/yt/.gvm/gos/go1.25.8/src/runtime/proc.go:460 +0xc0</span></span>
+<span class="line"><span>runtime.chanrecv(0x14000078070, 0x0, 0x1)</span></span>
+<span class="line"><span>	/Users/yt/.gvm/gos/go1.25.8/src/runtime/chan.go:667 +0x428</span></span>
+<span class="line"><span>main.main.func1()</span></span>
+<span class="line"><span>	/Users/yt/projects/bg/examples/go/concurrency/gmp-who-decides/main.go:25 +0x24</span></span></code></pre>
+<p>看 <code>m=nil</code> 和栈顶的 <code>runtime.gopark</code>：</p>
+<ul>
+<li>G <strong>不是被外部强行按停的</strong>，而是自己走进了 <code>runtime.gopark</code>。</li>
+<li><code>gopark</code> 把它的状态改成 <code>_Gwaiting</code>，挂到 channel 的等待队列里，同时把 <code>g</code> 和 <code>m</code> 的绑定解开（<code>m=nil</code>）。</li>
+<li>此刻它就是用户态内存里的一个普通数据对象，<strong>不占任何 OS 线程</strong>；原来跑它的那个 M，直接转身去队列里拿下一个 G 继续跑。</li>
+</ul>
+<h2 id="如果只有-g-和-m为什么两层会撞墙">如果只有 G 和 M：为什么两层会撞墙？</h2>
+<p>既然「一个 G = 一段代码 + 自己的栈」「一个 M = 一个 OS 线程」，把几十万个 G 塞进一个全局队列，开几个 M 去队列里抢着跑——这不就行了吗？</p>
+<p>Go 早期（Go 1.0）还真是这么干的，结果撞上了两个具体问题：</p>
+<p><strong>问题一：所有 M 抢同一把全局锁。</strong> 几万个 G 频繁创建、唤醒、出队、入队，如果只有一个全局队列，所有 CPU 核心上的线程每次调度都要抢同一把大锁，核数一多，锁竞争直接把吞吐打崩。</p>
+<p><strong>问题二：内存分配缓存（<code>mcache</code>）和系统调用浪费严重。</strong> 为了让内存分配不每次都抢全局锁，每个运行者都需要自带一块小对象本地缓存（<code>mcache</code>）。如果缓存挂在 <strong>M</strong> 身上，一旦 M 因为慢磁盘或 <code>cgo</code> 卡在系统调用里，就得再开新 M 顶班；系统调用一多，可能同时存在上百个 M（绝大多数在内核里睡着或空等），每一个 M 都白白占着一份 <code>mcache</code>，内存炸掉，缓存局部性也跟着没了。</p>
+<p><strong>问题三：谁决定同时有几个线程在跑用户 Go 代码？</strong> 没有一个「配额」层，线程数很容易无限膨胀或来回切换。</p>
+<p>于是你想出的解法很自然：<strong>把「执行资源」和「OS 线程」拆开</strong>。加一层中间的「许可证 / 工作台」：</p>
+<ul>
+<li>数量固定，等于你要用的 CPU 并发度（<code>GOMAXPROCS</code>）。</li>
+<li>每个工作台自带一份<strong>本地运行队列</strong>和一份 <strong><code>mcache</code></strong>。</li>
+<li>任何 M 想执行用户 Go 代码，<strong>必须先领到一张工作台</strong>；要是 M 卡进内核阻塞系统调用了，把这张工作台交出去给别的 M 就行，工作台上的本地队列和 <code>mcache</code> 跟着工作台走，不白浪费。</li>
+</ul>
+<p>这张工作台，就是 <strong>P（Processor）</strong>。</p>
+<h2 id="先把整张图看对流传图里的三个常见错误">先把整张图看对：流传图里的三个常见错误</h2>
+<p>网上流传的 GMP 示意图经常把三件事画反，下面这张基于 <strong>Go 1.25.8</strong> 源码画的图把它们全部纠偏了：</p>
+<p><img src="/images/gmp-scheduler-diagram.svg" alt="Go GMP 调度器结构图"></p>
+<p>对照这张图，先把最常画错的三件事钉死：</p>
+<ol>
+<li><strong><code>go f()</code> 不是先进全局队列</strong>。新创建的 G 和刚被唤醒的 G 通常直接插进当前 P 的 <code>runnext</code> 单槽；原本占着 <code>runnext</code> 的那个 G 被挤出来，塞进 <code>runq[256]</code> 队尾；只有 <code>runq</code> 满了 256 个，<code>runqputslow</code> 才会把一半（128 个）连同新 G 一起搬去全局队列。</li>
+<li><strong>P 和 M 不是固定配对，是临时租用</strong>。<code>wirep</code> 建立双向指针，<code>releasep</code> 拆掉。同一个 P 可以先后交给不同的 M；找不到活的 M 会交出 P 进待领池（<code>_Pidle</code>），自己停进空闲 M 池（<code>sched.midle</code>）。</li>
+<li><strong>没有图上的 <code>runnext</code> 和待领池，很多现象解释不通</strong>。比如为什么刚 <code>go</code> 出来的 G 往往立刻被当前 M 接力跑掉（因为它直接进了 <code>runnext</code>，下一次 <code>runqget</code> 第一个就拿它，甚至继承剩余时间片）；为什么空闲时 P 没有消失，只是躺在 <code>sched.pidle</code> 里等有活时被领走。</li>
+</ol>
+<p>记住一句最管用的分工：<strong>G 是待跑任务 + 自己的栈，M 是近视的 OS 执行线程（只能拿着 P 找活干、有活就干、没活就停），P 是并发许可证（带着本地队列和 <code>mcache</code>）</strong>。</p>
+<h2 id="同样是卡住了为什么有的涨线程有的不涨">同样是“卡住了”，为什么有的涨线程、有的不涨？</h2>
+<p>这是 GMP 里最核心的分水岭。假设 <code>P1</code> 上正在跑 <code>G1</code>，本地队列里还排着 <code>G2</code>、<code>G3</code>，现在 <code>G1</code> 卡住了——后面发生什么，完全取决于它<strong>卡在哪里</strong>：</p>
+<h3 id="情况-a读空-channel-或等网络-socketm-和-p-根本不分开">情况 A：读空 channel 或等网络 socket（M 和 P 根本不分开）</h3>
+<p><code>G1</code> 读一个没数据的 <code>channel</code>，或者读一个客户端还没发数据的 <code>net.Conn</code>：</p>
+<ul>
+<li><code>channel</code> 会把 <code>G1</code> 放进自己的 <code>recvq</code>；网络 socket 已经被设成非阻塞并注册进内核 epoll / kqueue，<code>G1</code> 把自己挂到对应 fd 的 <code>pollDesc</code> 上。</li>
+<li>接着 <code>G1</code> 自己调 <code>gopark</code> 变成 <code>_Gwaiting</code>，彻底脱离当前 M。</li>
+<li><strong>M 和 P 一步都没解绑！</strong> M 自己没被 OS 内核挂起，直接在原地再调一次调度循环，从 <code>P1</code> 的队列里把 <code>G2</code> 拿出来继续跑。</li>
+</ul>
+<p>所以哪怕挂着 10 万个长连接同时等数据，那 10 万个 G 只是安静地躺在用户态内存里的 <code>pollDesc</code> 上，底层只用跟着核数走的几个 M 就够了——<strong>OS 线程数不会跟着涨</strong>。</p>
+<h3 id="情况-b卡在阻塞系统调用里m-真卡进内核p-被抢走交接">情况 B：卡在阻塞系统调用里（M 真卡进内核，P 被抢走交接）</h3>
+<p>如果 <code>G1</code> 调的是普通磁盘文件、<code>cgo</code> 或者 <code>/dev/urandom</code> 这类<strong>不能走 netpoll 的阻塞系统调用</strong>：</p>
+<ul>
+<li>这次是 <strong>M 连人带线程一起卡在 OS 内核里</strong>了，OS 把这个线程挂起，M 没法切去跑 <code>G2</code>。</li>
+<li>进系统调用前，M 会先通过 <code>reentersyscall</code> 解绑与 <code>P1</code> 的双向指针（<code>P1</code> 标成 <code>_Psyscall</code>，M 用 <code>m.oldp</code> 记住它）。如果很快返回且 <code>P1</code> 没人抢，M 可以直接捡回 <code>P1</code> 接着跑。</li>
+<li>一旦卡住超过 <strong>10ms</strong>（<code>forcePreemptNS</code>）且 <code>P1</code> 队列里还有活，后台的监控线程 <strong><code>sysmon</code></strong>（一个不跑用户 G、也不需要 P 的独立 M）在 <code>retake</code> 时就会出手，把 <code>P1</code> 强行收走并调用 <code>handoffp</code>，交给另一个空闲 M；池子里没有空闲 M 时，就直接 <code>newm</code> → <code>pthread_create</code> <strong>新建一个 OS 线程</strong>来接走 <code>P1</code>，跑起 <code>G2</code>、<code>G3</code>。</li>
+</ul>
+<p><code>examples/go/concurrency/gmp-syscall-handoff</code> 实测的正是这一幕：设 <code>GOMAXPROCS=2</code>，同时起 4 个线程阻塞读 <code>/dev/urandom</code>：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="text"><code><span class="line"><span>GOMAXPROCS = 2, readers = 4</span></span>
+<span class="line"><span>观察点：threads 会不会超过 gomaxprocs</span></span>
+<span class="line"><span>SCHED 399ms: gomaxprocs=2 idleprocs=0 threads=7 spinningthreads=0 needspinning=0 idlethreads=1 ...</span></span>
+<span class="line"><span>  P0: status=2 schedtick=411 syscalltick=21495 m=nil runqsize=0 timerslen=1</span></span>
+<span class="line"><span>  P1: status=2 schedtick=302 syscalltick=21052 m=nil runqsize=0 timerslen=0</span></span>
+<span class="line"><span>  ...</span></span>
+<span class="line"><span>  G3: status=3() m=4 lockedm=nil</span></span>
+<span class="line"><span>  G4: status=3() m=0 lockedm=nil</span></span>
+<span class="line"><span>  G5: status=3() m=3 lockedm=nil</span></span>
+<span class="line"><span>  G6: status=3() m=5 lockedm=nil</span></span></code></pre>
+<p><code>gomaxprocs=2</code> 纹丝不动，但进程里的 OS 线程数直接涨到了 <code>threads=7</code>，两个 P 全部处于 <code>status=2</code>（<code>_Psyscall</code>）且 <code>m=nil</code>——P 已经被交出去了。</p>
+<h2 id="一个空闲的-m-是怎么找活干的findrunnable-主线">一个空闲的 M 是怎么找活干的：<code>findRunnable</code> 主线</h2>
+<p>当一个 M 送走上一个 G、回到调度循环时，它手里还拿着一张 P，会走进 <code>runtime/proc.go</code> 的 <code>findRunnable</code>（3377–3786 行）。</p>
+<p>按从快到慢、从自己到全局的顺序，它要过 <strong>6 道关</strong>：</p>
+<h3 id="1-先检查-stw定时器和后台急活33913426-行">1. 先检查 STW、定时器和后台急活（3391–3426 行）</h3>
+<ul>
+<li>如果 <code>sched.gcwaiting</code> 立起来了（GC 要 STW），立刻调 <code>gcstopm()</code> 让出 P 停下来，恢复后再回 <code>top:</code> 重找。</li>
+<li>顺手跑一遍当前 P 的 <code>timers.check</code>，把到点的定时器唤醒，同时算出下一个最近定时器还要等多久（<code>pollUntil</code>），万一后面没活要睡觉就知道该睡多久。</li>
+<li>如果正在做 trace 或并发 GC 标记，先拉起 trace reader 或 GC worker。</li>
+</ul>
+<h3 id="2-每-61-次抽查一次全局队列防止饿死34313438-行">2. 每 61 次抽查一次全局队列，防止饿死（3431–3438 行）</h3>
+<p><strong>为什么要这一步？</strong> 假设当前 P 里有两个 G 一直在互相发消息唤醒，每次都把对方挤进 <code>runnext</code>——如果 M 只顾着看自己本地队列，那外面全局队列里排队的 G 会永远轮不到。</p>
+<p>但又不能每次调度都查全局队列（全局队列有 <code>sched.lock</code> 全局锁，每次都抢会很慢）。所以 Go 选了一个折中：<strong>每调度 61 次（<code>pp.schedtick % 61 == 0</code>），先加锁去全局队列拿 1 个 G</strong>。选 61 这个素数，是为了避开常见周期碰撞、尽量少抢锁。</p>
+<h3 id="3-自己本地队列34573459-行">3. 自己本地队列（3457–3459 行）</h3>
+<p>调用 <code>runqget(pp)</code>：先看单槽 <code>runnext</code>，空了再从无锁环形数组 <code>runq[256]</code> 头部 CAS 取一个。只要拿到就立刻返回去跑，<strong>整个过程不碰全局锁</strong>。</p>
+<h3 id="4-本地空了先去全局批发一批再非阻塞扫一眼网络34623498-行">4. 本地空了：先去全局“批发”一批，再非阻塞扫一眼网络（3462–3498 行）</h3>
+<p>自己本地队列空了之后，在去“翻别人家队列”之前，先看两个更顺路的地方：</p>
+<ol>
+<li><strong>去全局队列批量拿</strong>：这次不是拿 1 个，而是调用 <code>globrunqgetbatch(len(pp.runq) / 2)</code> <strong>一次批发最多一半本地容量（128 个）回来</strong>，跑第一个，其余塞进自己本地队列慢慢消化，减少抢锁次数。</li>
+<li><strong>非阻塞扫一眼 <code>netpoll(0)</code></strong>：如果此时还有人在等网络 IO，且没有别的 M 正在 poll 网络，就传 <code>delay = 0</code> 非阻塞问一次 epoll / kqueue。如果有已经就绪的网络 G，直接拿回来跑，比四处偷别的 P 更划算；同时用 <code>sched.pollingNet.Swap(1) == 0</code> 保证同一时刻只有一个 M 去扫内核，避免多核竞争。</li>
+</ol>
+<h3 id="5-进入-spinning去其他-p-偷一半回来35053526-行">5. 进入 <code>spinning</code>，去其他 P 偷一半回来（3505–3526 行）</h3>
+<p>自己没有、全局没有、网络也没就绪，M 才进入 <code>spinning</code>（自旋找活）状态，调用 <code>stealWork</code> 最多扫 4 轮，随机挑其他非空闲 P，从它的 <code>runq</code> 头部偷约一半 G 过来（最后一轮连别人普通队列都空时，退避几微秒后再尝试偷它的 <code>runnext</code>）。</p>
+<p>这里有个重要刹车：<strong>正在自旋偷活的 M，数量不能超过忙碌 P 数量的一半</strong>（<code>2 * sched.nmspinning &#x3C; gomaxprocs - sched.npidle</code>）。不然假设 16 核机器上只有 1 个 P 在忙，剩下十几个 M 全去空转扫那 1 个队列，CPU 全烧在假忙上。</p>
+<h3 id="6-连偷都偷不到打扫现场防丢唤醒最后睡觉35323785-行">6. 连偷都偷不到：打扫现场、防丢唤醒、最后睡觉（3532–3785 行）</h3>
+<p>如果正在 GC 标记阶段且还有标记活，先客串一把 idle GC worker；真没活了才准备交 P 睡觉：</p>
+<ol>
+<li>加锁最后检查一次 STW 和全局队列，真没有就 <code>releasep()</code> 解绑、<code>pidleput()</code> 把 P 放进待领池。</li>
+<li><strong>最微妙的一步（源码注释叫 Delicate dance，3610–3714 行）</strong>：<strong>必须先取消 <code>mp.spinning = false</code>、把 <code>sched.nmspinning</code> 减 1，然后再回头重查一遍全局队列、各 P 队列、idle GC 和 timer</strong>。原因很简单：如果先查队列、再取消 <code>spinning</code>，中间那一纳秒刚好有另一个线程塞进新 G——那个线程看到 <code>nmspinning > 0</code> 以为外面还有 M 在自旋就不会额外唤醒新线程，而这边 M 紧接着睡过去了，新 G 就会卡在队列里没人管。</li>
+<li>重查还是没有：如果没人正在做阻塞 <code>netpoll</code>，当前这个已经没有 P、也没有 <code>spinning</code> 的 M 就亲自阻塞在 <strong><code>netpoll(delay)</code></strong> 上等网络事件或最近一个定时器；已经有别的 M 在里面等了，就直接调用 <code>stopm()</code> 停车睡觉，等以后有活时被 <code>wakep</code> / <code>startm</code> 叫醒，跳回 <code>top:</code> 重新来过。</li>
+</ol>
+<h2 id="两个高频工程坑">两个高频工程坑</h2>
+<h3 id="坑一gomaxprocs-与容器-cpu-limit">坑一：<code>GOMAXPROCS</code> 与容器 CPU limit</h3>
+<p><strong>Go 1.25 之前</strong>，在容器里部署 Go 服务有个著名暗坑：宿主机 64 核，K8s 给 Pod 配 <code>limits.cpu: 2</code>，但 Go 默认直接按宿主机逻辑核数建 64 个 P。高并发一来几十个 M 一齐开跑，不到几毫秒就把 100ms 周期的 2 核配额烧光，剩下九十多毫秒整个容器被 Linux CFS 硬按住（CPU Throttling），P99 延迟直接炸掉——所以以前线上必须挂 <code>uber-go/automaxprocs</code>。</p>
+<p>在你本机用的 <strong>Go 1.25.8</strong> 里（<code>src/runtime/cgroup_linux.go</code> 第 85–119 行与 <code>proc.go</code> 第 6348 行），runtime 已经内置了容器感知：</p>
+<ul>
+<li>只要你<strong>没有</strong>通过环境变量或代码显式调用 <code>runtime.GOMAXPROCS(n)</code> 锁死数值，默认取 <code>min(宿主机可用核数, ceil(cgroup quota / period))</code>，且保底至少给 <strong>2</strong>。</li>
+<li><code>sysmon</code> 在后台<strong>最多每秒检查一次</strong>（<code>sysmonUpdateGOMAXPROCS</code>），连容器运行时动态调了 CPU limit 都能自动跟着缩扩。</li>
+<li><strong>注意边界</strong>：如果老项目在启动脚本或 <code>init()</code> 里硬编码写死了 <code>GOMAXPROCS=32</code>，就会把 <code>sched.customGOMAXPROCS</code> 设为 <code>true</code>，<strong>直接关掉这套自动感知</strong>，容器限核毛刺会立刻回来。</li>
+</ul>
+<h3 id="坑二goroutine-泄漏的真实代价">坑二：goroutine 泄漏的真实代价</h3>
+<p>「泄漏一个 G 不就是占 2KB 内存吗，反正它卡在 channel 上不动也不吃 CPU」——线上这是最容易误判的地方，真实代价有三层：</p>
+<ol>
+<li><strong>内存底价远不止 2KB，而且会锁死堆对象</strong>：2636 字节只是“刚出生就卡住”的最低底价。业务 G 跑过深层函数后栈可能早就扩到几十 KB；只要它卡着不退出，栈帧上拿着的所有指针（大切片、<code>*http.Request</code>、连接句柄）全都是 GC 可达根对象，堆内存跟着一起无法回收。</li>
+<li><strong>零调度开销，但会拖慢每一次 GC</strong>：卡死的 G 确实不在任何运行队列里，M 找活不会理它；但 <strong>每次 GC 标记阶段都必须扫描所有存活 <code>g</code> 的栈</strong>。几万、几十万个僵尸 G 挂在那里，每次 GC 的根扫描耗时就会凭空暴涨，把正常请求拖出毛刺。</li>
+<li><strong>关联外部资源一起卡死</strong>：如果泄漏的 G 还握着锁或 DB/Redis 连接，业务往往还没 OOM，连接池就已经先被打满了。</li>
+</ol>
+<p>监控到 <code>runtime.NumGoroutine()</code> 单调上涨时，直接抓 <code>/debug/pprof/goroutine?debug=1</code>，通常一眼就能看见成千上万个 G 停在同一行 <code>[chan receive]</code> 或 <code>[select]</code>。</p>
+<h2 id="一张表收尾">一张表收尾</h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>当 G 遇到什么</th><th>G 怎么变</th><th>M 和 P 怎么变</th><th>OS 线程数会涨吗</th></tr></thead><tbody><tr><td>读空 channel / 等锁</td><td><code>gopark</code> 进对应队列</td><td><strong>M↔P 不分开</strong>，M 原地拿下一个 G 跑</td><td>不会</td></tr><tr><td>等非阻塞 socket IO</td><td>挂进 <code>pollDesc</code></td><td><strong>M↔P 不分开</strong>，fd 交给 epoll/kqueue 盯</td><td>不会</td></tr><tr><td>进阻塞系统调用 / cgo</td><td>状态 <code>_Gsyscall</code></td><td>M 连带陷进内核，超 10ms <code>sysmon</code> 抢走 P</td><td><strong>会</strong></td></tr><tr><td>找不到任何活干</td><td>—</td><td>先取消 <code>spinning</code> 重查，再交 P 并 <code>stopm</code></td><td>不会</td></tr></tbody></table>
+<p>一句话串起整套 GMP：</p>
+<blockquote><p>线程太贵扛不住海量并发 → 用用户态 G + 协作式 <code>gopark</code> 把阻塞从内核搬回用户态 → 两层模型抢全局锁且 <code>mcache</code> 随阻塞线程浪费 → 加中间层 P 固定并发度并承载本地无锁队列与内存缓存 → 通过 <code>findRunnable</code> 六道关、<code>sysmon</code> 交接与 <code>netpoll</code> 让少数几个 OS 线程同时撑起几十万并发任务。</p></blockquote>
+<h2 id="参考源码与实测代码">参考源码与实测代码</h2>
+<ul>
+<li>Go 1.25.8 运行时源码：<code>src/runtime/proc.go</code>（<code>findRunnable</code>、<code>stealWork</code>、<code>retake</code>）、<code>src/runtime/cgroup_linux.go</code>（<code>defaultGOMAXPROCS</code>）</li>
+<li>本机实测示例（仓库 <code>examples/go/concurrency/</code>）：<code>gmp-roles</code>、<code>gmp-who-decides</code>、<code>goroutine-cost</code>、<code>gmp-syscall-handoff</code>、<code>netpoll-http</code></li>
+</ul> </article> <hr class="my-8 border-dashed">  <div id="btt-btn-container" class="fixed inset-e-4 bottom-8 z-50 md:sticky md:inset-e-auto md:float-end md:me-1 translate-y-14 opacity-0 transition duration-500"> <button data-button="back-to-top" class="group bg-background relative px-2 py-1 size-14 rounded-full shadow-xl md:h-8 md:w-fit md:rounded-md md:shadow-none md:focus-visible:rounded-none md:bg-background/35 md:bg-clip-padding md:backdrop-blur-lg"> <span id="progress-indicator" class="absolute inset-0 -z-10 block size-14 scale-110 rounded-full bg-transparent md:hidden md:h-8 md:rounded-md"></span> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block rotate-90 md:hidden" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 12h14M5 12l6 6M5 12l6-6" /></svg> <span class="group-hover:text-accent sr-only text-sm md:not-sr-only"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M12 5v14M16 9l-4-4M8 9l4-4" /></svg> 回到顶部 </span> </button> </div> <script data-astro-rerun>
+  function backToTop() {
+    const rootElement = document.documentElement;
+    const btnContainer = document.querySelector("#btt-btn-container");
+    const backToTopBtn = document.querySelector("[data-button='back-to-top']");
+    const progressIndicator = document.querySelector("#progress-indicator");
+
+    if (!rootElement || !btnContainer || !backToTopBtn || !progressIndicator)
+      return;
+
+    backToTopBtn.addEventListener("click", () => {
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+    });
+
+    let lastVisible = null;
+    function handleScroll() {
+      const scrollTotal = rootElement.scrollHeight - rootElement.clientHeight;
+      const scrollTop = rootElement.scrollTop;
+      const scrollPercent = Math.floor((scrollTop / scrollTotal) * 100);
+
+      progressIndicator.style.setProperty(
+        "background-image",
+        `conic-gradient(var(--accent), var(--accent) ${scrollPercent}%, transparent ${scrollPercent}%)`
+      );
+
+      const isVisible = scrollTop / scrollTotal > 0.3;
+
+      if (isVisible !== lastVisible) {
+        btnContainer.classList.toggle("opacity-100", isVisible);
+        btnContainer.classList.toggle("translate-y-0", isVisible);
+        btnContainer.classList.toggle("opacity-0", !isVisible);
+        btnContainer.classList.toggle("translate-y-14", !isVisible);
+        lastVisible = isVisible;
+      }
+    }
+
+    let ticking = false;
+    document.addEventListener("scroll", () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          handleScroll();
+          ticking = false;
+        });
+        ticking = true;
+      }
+    });
+  }
+  backToTop();
+</script> <ul class="mt-4 mb-8 flex flex-wrap gap-4 sm:my-8"> <li> <a href="/tags/go/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-1"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> Go </a> </li><li> <a href="/tags/并发/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> 并发 </a> </li><li> <a href="/tags/gmp/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-3"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> GMP </a> </li><li> <a href="/tags/调度器/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-4"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> 调度器 </a> </li><li> <a href="/tags/复习/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-5"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> 复习 </a> </li> </ul>  <hr class="my-8 border-dashed"> <div data-pagefind-ignore class="my-8 grid grid-cols-1 gap-6 sm:grid-cols-2">  <a href="/posts/go/io-models-from-stuck-code-to-epoll/" class="flex w-full justify-end gap-1 text-end hover:opacity-75 sm:col-start-2"> <div> <span>下一篇</span> <div class="text-accent/85 text-sm">从一段卡住的代码到 epoll：IO 模型是怎么一步步长出来的</div> </div> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block flex-none rtl:rotate-180" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 12h14M13 18l6-6M13 6l6 6" /></svg> </a> </div> </main> <footer class="app-layout mt-auto"> <div class="border-border flex flex-col items-center justify-between border-t py-6 sm:flex-row-reverse sm:py-4"> <div class="flex flex-wrap items-center gap-1"> <a href="https://github.com/julesChu12/blog-code" title="示例代码仓库" class="group inline-flex items-center gap-1 hover:text-accent p-2 hover:rotate-6 sm:p-1">  <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-6 scale-125 fill-transparent stroke-current stroke-2 opacity-90 group-hover:fill-transparent sm:scale-110" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21" /></svg> <span class="sr-only">示例代码仓库</span>  </a> </div> <div class="my-2 flex flex-col items-center whitespace-nowrap sm:flex-row"> <span> &#169; 2026</span> <span class="hidden sm:inline">&nbsp;|&nbsp;</span> <span>保留所有权利。</span> </div> </div> </footer>   <script type="module">const c="theme",n="light",o="dark";function s(){const e=localStorage.getItem(c);return e||(window.matchMedia("(prefers-color-scheme: dark)").matches?o:n)}let t=window.__theme?.value??s();function a(){localStorage.setItem(c,t),m()}function m(){const e=document.firstElementChild;e?.setAttribute("data-theme",t),e?.classList.toggle("dark",t===o),document.querySelector("#theme-btn")?.setAttribute("aria-label",t===o?"切换至浅色":"切换至深色");const r=window.getComputedStyle(document.body).backgroundColor;document.querySelector("meta[name='theme-color']")?.setAttribute("content",r)}function d(){m(),document.querySelector("#theme-btn")?.addEventListener("click",()=>{t=t===n?o:n,a()})}d();document.addEventListener("astro:after-swap",d);document.addEventListener("astro:before-swap",e=>{const r=document.querySelector("meta[name='theme-color']")?.getAttribute("content");r&&e.newDocument.querySelector("meta[name='theme-color']")?.setAttribute("content",r)});window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change",({matches:e})=>{t=e?o:n,a()});</script> </body> </html> <script data-astro-rerun>
+  function addHeadingLinks() {
+    const headings = Array.from(
+      document.querySelectorAll("h2, h3, h4, h5, h6")
+    );
+    for (const heading of headings) {
+      heading.classList.add("group");
+      const link = document.createElement("a");
+      link.className =
+        "heading-link ms-2 no-underline opacity-75 md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100";
+      link.href = "#" + heading.id;
+
+      const span = document.createElement("span");
+      span.ariaHidden = "true";
+      span.innerText = "#";
+      link.appendChild(span);
+      heading.appendChild(link);
+    }
+  }
+  addHeadingLinks();
+
+  function attachCopyButtons() {
+    const copyButtonLabel = "复制";
+    const codeBlocks = Array.from(document.querySelectorAll("pre"));
+
+    for (const codeBlock of codeBlocks) {
+      const wrapper = document.createElement("div");
+      wrapper.style.position = "relative";
+
+      const computedStyle = getComputedStyle(codeBlock);
+      const hasFileNameOffset =
+        computedStyle.getPropertyValue("--file-name-offset").trim() !== "";
+
+      const topClass = hasFileNameOffset
+        ? "top-(--file-name-offset)"
+        : "-top-3";
+
+      const copyButton = document.createElement("button");
+      copyButton.className = `copy-code absolute end-3 ${topClass} rounded bg-muted border border-muted px-2 py-1 text-xs leading-4 text-foreground font-medium`;
+      copyButton.innerHTML = copyButtonLabel;
+      codeBlock.setAttribute("tabindex", "0");
+      codeBlock.appendChild(copyButton);
+
+      codeBlock?.parentNode?.insertBefore(wrapper, codeBlock);
+      wrapper.appendChild(codeBlock);
+
+      copyButton.addEventListener("click", async () => {
+        await copyCode(codeBlock, copyButton);
+      });
+    }
+
+    async function copyCode(block, button) {
+      const code = block.querySelector("code");
+      const text = code?.innerText;
+
+      try {
+        await navigator.clipboard.writeText(text ?? "");
+        button.innerText = "已复制";
+      } catch {
+        button.innerText = "请手动复制";
+      }
+
+      setTimeout(() => {
+        button.innerText = copyButtonLabel;
+      }, 700);
+    }
+  }
+  attachCopyButtons();
+
+  /** Accessible image lightbox for article images. */
+  function initLightbox() {
+    const article = document.getElementById("article");
+    if (!article) return;
+
+    const prefersReducedMotion = () =>
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let overlay = null;
+    let lastFocused = null;
+
+    // Defer attribute mutations so they don't push the LCP timestamp.
+    // Event listeners below use delegation and don't need the attributes to exist yet.
+    requestAnimationFrame(() => {
+      const images = Array.from(article.querySelectorAll("img"));
+      for (const image of images) {
+        if (image.closest("a")) continue;
+        image.setAttribute("role", "button");
+        image.setAttribute("tabindex", "0");
+        image.setAttribute("aria-haspopup", "dialog");
+        image.setAttribute(
+          "aria-label",
+          image.alt ? `放大图片：${image.alt}` : "放大图片"
+        );
+      }
+    });
+
+    function open(src, alt, trigger) {
+      if (overlay) return;
+      lastFocused = trigger ?? document.activeElement;
+
+      overlay = document.createElement("div");
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.setAttribute("aria-label", alt ? `图片预览：${alt}` : "图片预览");
+      overlay.className =
+        "fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/70 backdrop-blur-sm opacity-0 transition-opacity duration-200 motion-reduce:transition-none";
+
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.setAttribute("aria-label", "关闭图片预览");
+      closeButton.className =
+        "absolute end-4 top-4 rounded p-2 text-3xl leading-none text-white";
+      closeButton.innerHTML = "&#10005;";
+      closeButton.addEventListener("click", close);
+
+      const image = document.createElement("img");
+      image.src = src;
+      image.alt = "";
+      image.className =
+        "max-h-[90dvh] max-w-[90dvw] cursor-default object-contain";
+
+      overlay.append(closeButton, image);
+      overlay.addEventListener("click", e => {
+        if (e.target === overlay && currentScale <= 1) close();
+      });
+
+      let currentScale = 1;
+      let translateX = 0;
+      let translateY = 0;
+      let initialDist = 0;
+      let initialScale = 1;
+      let panStartX = 0;
+      let panStartY = 0;
+      let panStartTranslateX = 0;
+      let panStartTranslateY = 0;
+      let lastTapTime = 0;
+
+      function applyTransform() {
+        image.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+      }
+
+      function resetTransform() {
+        currentScale = 1;
+        translateX = 0;
+        translateY = 0;
+        image.style.transform = "";
+      }
+
+      overlay.addEventListener(
+        "touchstart",
+        e => {
+          const t = e.touches;
+          if (t.length === 2) {
+            initialDist = Math.hypot(
+              t[1].clientX - t[0].clientX,
+              t[1].clientY - t[0].clientY
+            );
+            initialScale = currentScale;
+          } else if (t.length === 1) {
+            const now = Date.now();
+            if (now - lastTapTime < 300) {
+              e.preventDefault();
+              if (currentScale > 1) {
+                resetTransform();
+              } else {
+                currentScale = 2;
+                translateX = 0;
+                translateY = 0;
+                applyTransform();
+              }
+              lastTapTime = 0;
+              panStartX = t[0].clientX;
+              panStartY = t[0].clientY;
+              panStartTranslateX = translateX;
+              panStartTranslateY = translateY;
+            } else {
+              lastTapTime = now;
+              if (currentScale > 1) {
+                panStartX = t[0].clientX;
+                panStartY = t[0].clientY;
+                panStartTranslateX = translateX;
+                panStartTranslateY = translateY;
+              }
+            }
+          }
+        },
+        { passive: false }
+      );
+
+      overlay.addEventListener(
+        "touchmove",
+        e => {
+          const t = e.touches;
+          if (t.length === 2) {
+            e.preventDefault();
+            const dist = Math.hypot(
+              t[1].clientX - t[0].clientX,
+              t[1].clientY - t[0].clientY
+            );
+            currentScale = Math.min(
+              4,
+              Math.max(1, initialScale * (dist / initialDist))
+            );
+            applyTransform();
+          } else if (t.length === 1) {
+            if (currentScale > 1) {
+              e.preventDefault();
+              translateX =
+                panStartTranslateX + (t[0].clientX - panStartX) / currentScale;
+              translateY =
+                panStartTranslateY + (t[0].clientY - panStartY) / currentScale;
+              const maxX = Math.max(
+                0,
+                (image.clientWidth - overlay.clientWidth / currentScale) / 2
+              );
+              const maxY = Math.max(
+                0,
+                (image.clientHeight - overlay.clientHeight / currentScale) / 2
+              );
+              translateX = Math.min(maxX, Math.max(-maxX, translateX));
+              translateY = Math.min(maxY, Math.max(-maxY, translateY));
+              applyTransform();
+            } else {
+              e.preventDefault();
+            }
+          }
+        },
+        { passive: false }
+      );
+
+      overlay.addEventListener("touchend", e => {
+        if (e.touches.length === 0 && currentScale <= 1.05) {
+          resetTransform();
+        }
+      });
+
+      overlay.addEventListener("touchcancel", e => {
+        if (e.touches.length === 0 && currentScale <= 1.05) {
+          resetTransform();
+        }
+      });
+
+      document.body.appendChild(overlay);
+      document.body.style.overflow = "hidden";
+      document.addEventListener("keydown", onKeyDown);
+      window.__closeLightbox = close;
+
+      requestAnimationFrame(() => overlay?.classList.add("opacity-100"));
+      closeButton.focus();
+    }
+
+    function close() {
+      if (!overlay) return;
+      const el = overlay;
+      overlay = null;
+      window.__closeLightbox = null;
+
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = "";
+      lastFocused?.focus();
+      lastFocused = null;
+
+      if (prefersReducedMotion()) {
+        el.remove();
+        return;
+      }
+      const remove = () => el.remove();
+      el.addEventListener("transitionend", remove, { once: true });
+      setTimeout(remove, 250); // fallback in case transitionend never fires
+      el.classList.remove("opacity-100");
+    }
+
+    function onKeyDown(e) {
+      if (e.key === "Escape") {
+        close();
+      } else if (e.key === "Tab") {
+        trapFocus(e);
+      }
+    }
+
+    // Keep keyboard focus inside the open dialog.
+    function trapFocus(e) {
+      if (!overlay) return;
+      const focusables = overlay.querySelectorAll(
+        'a[href], button, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+
+    function triggerFromEvent(e) {
+      const image = e.target.closest("img");
+      if (!image || !article.contains(image) || image.closest("a")) return null;
+      return image;
+    }
+
+    function activate(image) {
+      open(image.currentSrc || image.src, image.alt, image);
+    }
+
+    article.addEventListener("click", e => {
+      const image = triggerFromEvent(e);
+      if (!image) return;
+      e.preventDefault();
+      activate(image);
+    });
+
+    article.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+      const image = triggerFromEvent(e);
+      if (!image) return;
+      e.preventDefault();
+      activate(image);
+    });
+  }
+  initLightbox();
+
+  if (!window.__lightboxSwapBound) {
+    window.__lightboxSwapBound = true;
+    document.addEventListener("astro:before-swap", () =>
+      window.__closeLightbox?.()
+    );
+  }
+
+  document.addEventListener("astro:after-swap", () =>
+    window.scrollTo({ left: 0, top: 0, behavior: "instant" })
+  );
+</script>
