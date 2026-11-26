@@ -1,0 +1,780 @@
+<!DOCTYPE html><html dir="ltr" lang="zh-CN" class="overflow-y-scroll scroll-smooth"> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="canonical" href="https://blog.yunmengspace.com/posts/go/io-models-from-stuck-code-to-epoll/"><meta name="generator" content="Astro v6.4.2"><!-- Primary meta --><title>从一段卡住的代码到 epoll：IO 模型是怎么一步步长出来的 | 开发与阅读</title><meta name="title" content="从一段卡住的代码到 epoll：IO 模型是怎么一步步长出来的 | 开发与阅读"><meta name="description" content="不背概念。从一段两个客户端就会卡住的服务器代码出发，自己推出多线程、非阻塞、select、poll、epoll——每个名词都是上一个问题的答案，最后看 Go 怎样把简单还回来。"><meta name="author" content="博主"><link rel="sitemap" href="/sitemap-index.xml"><!-- Open Graph --><meta property="og:type" content="website"><meta property="og:site_name" content="开发与阅读"><meta property="og:title" content="从一段卡住的代码到 epoll：IO 模型是怎么一步步长出来的 | 开发与阅读"><meta property="og:description" content="不背概念。从一段两个客户端就会卡住的服务器代码出发，自己推出多线程、非阻塞、select、poll、epoll——每个名词都是上一个问题的答案，最后看 Go 怎样把简单还回来。"><meta property="og:url" content="https://blog.yunmengspace.com/posts/go/io-models-from-stuck-code-to-epoll/"><meta property="og:image" content="https://blog.yunmengspace.com/og.png"><!-- Twitter / X --><meta property="twitter:card" content="summary_large_image"><meta property="twitter:url" content="https://blog.yunmengspace.com/posts/go/io-models-from-stuck-code-to-epoll/"><meta property="twitter:title" content="从一段卡住的代码到 epoll：IO 模型是怎么一步步长出来的 | 开发与阅读"><meta property="twitter:description" content="不背概念。从一段两个客户端就会卡住的服务器代码出发，自己推出多线程、非阻塞、select、poll、epoll——每个名词都是上一个问题的答案，最后看 Go 怎样把简单还回来。"><meta property="twitter:image" content="https://blog.yunmengspace.com/og.png"><!-- RSS autodiscovery --><link rel="alternate" type="application/rss+xml" title="开发与阅读" href="https://blog.yunmengspace.com/rss.xml"><!-- Filled at runtime by theme.ts to match the current background colour --><meta name="theme-color" content=""><!-- Extra head content injected by child layouts (e.g. JSON-LD, article meta) -->  <meta property="og:type" content="article"> <meta property="article:published_time" content="2026-11-26T07:15:00.000Z"><script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"从一段卡住的代码到 epoll：IO 模型是怎么一步步长出来的 | 开发与阅读","datePublished":"2026-11-26T07:15:00.000Z","author":[{"@type":"Person","name":"博主"}]}</script> <!--
+      Inline FOUC-prevention script: sets data-theme on <html> before
+      the browser paints. Runs synchronously, no defer/async.
+    --><script>
+      (function () {
+        const stored = localStorage.getItem("theme");
+        const prefersDark = window.matchMedia(
+          "(prefers-color-scheme: dark)"
+        ).matches;
+        const theme = stored ?? (prefersDark ? "dark" : "light");
+        const root = document.firstElementChild;
+        root?.setAttribute("data-theme", theme);
+        root?.classList.toggle("dark", theme === "dark");
+        // Expose value so theme.ts can skip re-detection.
+        window.__theme = { value: theme };
+      })();
+    </script><meta name="astro-view-transitions-enabled" content="true"><meta name="astro-view-transitions-fallback" content="animate"><script type="module" src="/_astro/ClientRouter.astro_astro_type_script_index_0_lang.CAqDO0tx.js"></script><link rel="stylesheet" href="/_astro/Footer.D_6VzwdI.css">
+<style>@keyframes astroFadeInOut{0%{opacity:1}to{opacity:0}}@keyframes astroFadeIn{0%{opacity:0;mix-blend-mode:plus-lighter}to{opacity:1;mix-blend-mode:plus-lighter}}@keyframes astroFadeOut{0%{opacity:1;mix-blend-mode:plus-lighter}to{opacity:0;mix-blend-mode:plus-lighter}}@keyframes astroSlideFromRight{0%{transform:translate(100%)}}@keyframes astroSlideFromLeft{0%{transform:translate(-100%)}}@keyframes astroSlideToRight{to{transform:translate(100%)}}@keyframes astroSlideToLeft{to{transform:translate(-100%)}}@media(prefers-reduced-motion){::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}[data-astro-transition-scope]{animation:none!important}}
+</style><style>[data-astro-transition-scope="astro-36ssibgs-1"] { view-transition-name: linux; }@layer astro { ::view-transition-old(linux) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(linux) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(linux) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(linux) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-1"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-1"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-2"] { view-transition-name: io\6A21\578B; }@layer astro { ::view-transition-old(io\6A21\578B) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(io\6A21\578B) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(io\6A21\578B) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(io\6A21\578B) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-2"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-2"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-3"] { view-transition-name: \7F51\7EDC; }@layer astro { ::view-transition-old(\7F51\7EDC) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(\7F51\7EDC) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(\7F51\7EDC) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(\7F51\7EDC) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-3"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-3"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style><style>[data-astro-transition-scope="astro-36ssibgs-4"] { view-transition-name: \590D\4E60; }@layer astro { ::view-transition-old(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }::view-transition-new(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back]::view-transition-old(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back]::view-transition-new(\590D\4E60) { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; } }[data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }[data-astro-transition=back][data-astro-transition-fallback="old"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition=back][data-astro-transition-fallback="old"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeOut; }[data-astro-transition=back][data-astro-transition-fallback="new"] [data-astro-transition-scope="astro-36ssibgs-4"],
+			[data-astro-transition=back][data-astro-transition-fallback="new"][data-astro-transition-scope="astro-36ssibgs-4"] { 
+	animation-duration: 180ms;
+	animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1);
+	animation-fill-mode: both;
+	animation-name: astroFadeIn; }</style></head> <body class="bg-background font-app text-foreground selection:bg-accent/75 selection:text-accent-foreground flex min-h-svh flex-col">    <a id="skip-to-content" href="#main-content" class="bg-background text-accent absolute inset-s-16 -top-full z-50 px-3 py-2 backdrop-blur-lg transition-all focus:top-4"> 跳转到正文 </a> <header class="app-layout flex flex-col items-center justify-between sm:flex-row"> <div class="border-border bg-background relative flex w-full items-baseline justify-between border-b py-4 sm:items-center sm:py-6"> <a href="/" class="absolute py-1 text-xl leading-8 font-semibold whitespace-nowrap sm:static sm:my-auto sm:text-2xl sm:leading-none"> 开发与阅读 </a> <nav id="nav-menu" class="flex w-full flex-col items-center sm:ms-2 sm:flex-row sm:justify-end sm:space-x-4 sm:py-0"> <button id="menu-btn" class="focus-outline self-end p-2 sm:hidden" aria-label="打开菜单" aria-expanded="false" aria-controls="menu-items" data-label-open="打开菜单" data-label-close="关闭菜单"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="hidden" viewBox="0 0 24 24" id="close-icon"><path stroke="none" d="M0 0h24v24H0z" /><path d="M18 6 6 18M6 6l12 12" /></svg> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="icon icon-tabler icons-tabler-outline icon-tabler-menu-deep" viewBox="0 0 24 24" id="menu-icon"><path stroke="none" d="M0 0h24v24H0z" /><path d="M4 6h16M7 12h13M10 18h10" /></svg> </button> <ul id="menu-items" class="[&>li>a]:hover:text-accent mt-4 hidden w-44 grid-cols-2 place-content-center gap-2 sm:mt-0 sm:flex sm:w-auto sm:gap-x-5 sm:gap-y-0 sm:[&>li]:h-8 [&>li>a]:block [&>li>a]:px-4 [&>li>a]:py-3 [&>li>a]:text-center [&>li>a]:font-medium sm:[&>li>a]:px-2 sm:[&>li>a]:py-1"> <li class="col-span-2"> <a href="/posts/" class="active-nav"> 文章 </a> </li> <li class="col-span-2"> <a href="/categories/">
+栏目
+</a> </li> <li class="col-span-2"> <a href="/about/"> 关于 </a> </li> <li class="col-span-2"> <a href="/archives/" title="归档" aria-label="归档" class="group inline-flex items-center gap-1 hover:text-accent focus-outline flex size-full justify-center p-3 sm:relative sm:size-8 sm:p-0">  <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="hidden sm:absolute sm:top-1/2 sm:left-1/2 sm:block sm:size-6 sm:-translate-x-1/2 sm:-translate-y-1/2" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4" /></svg> <span class="sm:sr-only">归档</span>  </a> </li> <li class="col-span-1 flex items-center justify-center"> <a href="/search/" title="搜索" aria-label="搜索" class="group inline-flex items-center gap-1 hover:text-accent focus-outline relative size-8">  <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-1/2 left-1/2 size-6 -translate-x-1/2 -translate-y-1/2" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M3 10a7 7 0 1 0 14 0 7 7 0 1 0-14 0M21 21l-6-6" /></svg> <span class="sr-only">搜索</span>  </a> </li> <li class="col-span-1 flex items-center justify-center"> <button id="theme-btn" class="focus-outline hover:[&>svg]:stroke-accent relative size-12 p-4 sm:size-8" title="切换深浅色" aria-label="auto" aria-live="polite"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-[50%] left-[50%] translate-[-50%] scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M12 3h.393a7.5 7.5 0 0 0 7.92 12.446A9 9 0 1 1 12 2.992z" /></svg> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="absolute top-[50%] left-[50%] translate-[-50%] scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M14.828 14.828a4 4 0 1 0-5.656-5.656 4 4 0 0 0 5.656 5.656M6.343 17.657l-1.414 1.414M6.343 6.343 4.929 4.929M17.657 6.343l1.414-1.414M17.657 17.657l1.414 1.414M4 12H2M12 4V2M20 12h2M12 20v2" /></svg> </button> </li> </ul> </nav> </div> </header> <script type="module">function c(){const e=document.querySelector("#menu-btn"),t=document.querySelector("#menu-items"),n=document.querySelector("#menu-icon"),s=document.querySelector("#close-icon");if(!e||!t||!n||!s)return;const a=e.dataset.labelOpen??"Open menu",l=e.dataset.labelClose??"Close menu";e.addEventListener("click",()=>{const o=e.getAttribute("aria-expanded")==="true";e.setAttribute("aria-expanded",o?"false":"true"),e.setAttribute("aria-label",o?a:l),t.classList.toggle("hidden"),t.classList.toggle("grid"),n.classList.toggle("hidden"),s.classList.toggle("hidden")})}c();document.addEventListener("astro:after-swap",c);</script> <div class="app-layout flex items-center justify-start"><a id="back-button" href="/" class="group inline-flex items-center gap-1 hover:text-accent focus-outline hover:text-foreground/75 -ms-2 mt-8 mb-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-6 rtl:rotate-180" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="m15 6-6 6 6 6" /></svg><span>返回列表</span> </a></div><script type="module">function o(){const t=document.querySelector("#back-button"),e=sessionStorage.getItem("backUrl");e&&t&&(t.href=e)}document.addEventListener("astro:page-load",o);o();</script> <main id="main-content" class="app-layout" data-pagefind-body> <a href="/categories/go/" class="text-accent mb-4 block w-fit text-sm font-medium" data-pagefind-filter="栏目"> Go </a>  <h1 style="view-transition-name:u004eceu004e00u006bb5u005361u004f4fu007684u004ee3u007801u005230-epollu00ff1a-io-u006a21u00578bu00662fu00600eu004e48u004e00u006b65u006b65u00957fu0051fau006765u007684" class="text-foreground inline-block text-2xl leading-snug font-bold sm:text-3xl"> 从一段卡住的代码到 epoll：IO 模型是怎么一步步长出来的 </h1> <div class="my-2 flex items-center gap-2"> <div class="text-muted-foreground flex items-center gap-x-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-6 min-w-5.5" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM16 3v4M8 3v4M4 11h16M7 14h.013M10.01 14h.005M13.01 14h.005M16.015 14h.005M13.015 17h.005M7.01 17h.005M10.01 17h.005" /></svg>  <time class="text-sm sm:text-base" datetime="2026-11-26T07:15:00.000Z"> 2026 年 11 月 26 日 </time> </div> <span aria-hidden="true" class="text-muted-foreground max-sm:hidden hidden">
+|
+</span>  </div> <article id="article" class="mt-8 w-full app-prose max-w-app prose-pre:bg-(--shiki-light-bg) dark:prose-pre:bg-(--shiki-dark-bg)"> <p>这篇文章不打算先告诉你 select、poll、epoll 是什么，再让你记住它们的优缺点。我想反过来：从一段你随手就能写出来的服务器代码开始，让它一步步遇到问题，你自己想办法解决，最后才发现——你想出来的那个东西，历史上早就有人做出来了，它叫某个名字。</p>
+<p>这样每个名词出场时，你都已经知道它为什么存在。</p>
+<h2 id="一段只有一个客户端时完全正确的代码">一段只有一个客户端时完全正确的代码</h2>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">ln</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">_</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> net</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Listen</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span><span style="--shiki-light:#22863A;--shiki-dark:#ECC48D">tcp</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span><span style="--shiki-light:#22863A;--shiki-dark:#ECC48D">:8080</span><span style="--shiki-light:#22863A;--shiki-dark:#D9F5DD">"</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">conn</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">_</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> ln</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Accept</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">()      </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 等一个客户端连上来</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">buf</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> make</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">([]</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">byte</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1024</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">n</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">_</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> conn</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Read</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">buf</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)      </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 等它发数据</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">handle</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">buf</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[:</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">n</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">])             </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 处理</span></span></code></pre>
+<p>一个客户端的时候，这段代码没有任何问题。<code>Accept</code> 等到连接，<code>Read</code> 等到数据，<code>handle</code> 处理。线性、直白，谁都会写。</p>
+<h2 id="第二个客户端来了它卡住了">第二个客户端来了，它卡住了</h2>
+<p>现在有两个客户端。第一个连上了，但连上之后还没发数据，于是程序停在 <code>conn.Read(buf)</code> 这一行，等着。</p>
+<p>就在这时，第二个客户端把数据发过来了。</p>
+<p><strong>没人理它。</strong> 因为整个程序只有一个线程，而这个线程正卡在第一个连接的 <code>Read</code> 上，出不来。它不知道第二个连接有数据，也没空去看。</p>
+<p>把这件事浓缩成一句话，后面所有内容都围着它转：</p>
+<blockquote><p><strong><code>Read</code> 在等数据的时候，这个线程什么都干不了。</strong></p></blockquote>
+<p>注意，这不是 Go 的毛病，C、Java、Python 全一样。这是”阻塞读”这个动作本身的性质。</p>
+<h2 id="你自己能想到的两条路">你自己能想到的两条路</h2>
+<p>问：怎么让一个程序同时照顾两个连接？</p>
+<p>先别往下看，自己想一想。大概率你会想到两条路：</p>
+<p><strong>路一：再开一个线程。</strong> 一个线程盯第一个连接，另一个盯第二个。谁的数据来了，各自的线程处理各自的。</p>
+<p><strong>路二：让 <code>Read</code> 别等。</strong> 没数据就立刻返回，告诉我”现在没有”，我先去看看别的连接，过会儿再回来问。</p>
+<p>这两条路都是对的。而且它们不是我先塞给你的两个名词——是你自己先想到的两个办法，历史上它们真的先后被用了出来。第一条叫<strong>多线程</strong>，第二条叫<strong>非阻塞 IO</strong>。</p>
+<p>下面分别走一遍，看它们各自在哪断掉。</p>
+<h2 id="路一一人盯一个断在人太多">路一：一人盯一个，断在”人太多”</h2>
+<p>多线程最直观。10 个连接开 10 个线程，100 个开 100 个，都没问题。</p>
+<p>但连接涨到 10000 个呢？每个线程不是免费的：</p>
+<ul>
+<li>每个线程要自己的栈。Linux 默认一个线程栈 8MB（虚拟内存），10000 个就是 80GB 虚拟地址空间。</li>
+<li>内核要为每个线程维护调度信息，线程切换要保存、恢复现场，还要进内核。</li>
+<li>10000 个线程轮流抢 CPU，光切换就吃掉大量时间。</li>
+</ul>
+<p>一台机器扛几千个线程就到头了。<strong>连接数 = 线程数</strong>，这条路被线程的数量上限卡死。</p>
+<p>这正是 1999 年 Dan Kegel 提出的著名问题：一台服务器怎么同时扛住一万个连接？史称 <strong>C10K</strong>。</p>
+<h2 id="路二让-read-别等断在问得太累">路二：让 Read 别等，断在”问得太累”</h2>
+<p>非阻塞 IO 把 <code>Read</code> 改成”没数据立刻返回”。于是一个线程就能照顾所有连接：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">for</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> {</span></span>
+<span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">    for</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> _</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">conn</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic"> range</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> conns</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> {</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">        n</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> read</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">conn</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)      </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 没数据立刻返回，不卡</span></span>
+<span class="line"><span style="--shiki-light:#D32F2F;--shiki-light-font-style:inherit;--shiki-dark:#C792EA;--shiki-dark-font-style:italic">        if</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> n</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> ></span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> {</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">            handle</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA">...</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">        }</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">    }</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">}</span></span></code></pre>
+<p>一个线程，一万个连接，内存和线程问题全没了。</p>
+<p>但新问题来了：<strong>这个循环在空转。</strong> 一万个连接，绝大多数时刻没数据。每问一次是一次系统调用，大约微秒级；一万个问一轮就是十毫秒级。CPU 100% 占着，可一万次里九千九百多次是白问。</p>
+<p>而且这里有个两难：</p>
+<ul>
+<li>问得勤 → 响应快，但 CPU 全烧在”问”上。</li>
+<li>问得慢（比如每轮之间睡 10ms）→ CPU 省了，但数据到了最多要等 10ms 才被发现。</li>
+</ul>
+<p><strong>用 CPU 换延迟，两头都不划算。</strong></p>
+<h2 id="一个自然冒出来的问题">一个自然冒出来的问题</h2>
+<p>走到这里，你会自然地想：</p>
+<blockquote><p>挨个问太累了。能不能我只说一次”我要盯这些连接”，之后<strong>谁有数据了，内核直接叫我</strong>，没数据我就睡着，不占 CPU？</p></blockquote>
+<p>这句话，就是 <strong>select</strong>。</p>
+<p>不是”select 是一个监视文件描述符集合的系统调用”这种定义——是你自己提出的需求，select 只是这个需求的名字。1983 年 BSD 就把它做出来了。</p>
+<p>它的用法正是你想的那样：把要盯的连接交给内核，内核替你等，任何一个就绪就把你叫醒。</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="c"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">fd_set set;</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">FD_ZERO</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA">&#x26;</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D7DBE0">set</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">);</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">FD_SET</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(conn1</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> &#x26;</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D7DBE0">set</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">);</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">FD_SET</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(conn2</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> &#x26;</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D7DBE0">set</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">);</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">select</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(maxfd </span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA">+</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 1</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> &#x26;</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D7DBE0">set</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#1976D2;--shiki-dark:#82AAFF"> NULL</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#1976D2;--shiki-dark:#82AAFF"> NULL</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> &#x26;</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D7DBE0">timeout</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">);</span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">  // 睡到有人就绪</span></span></code></pre>
+<p>这一步是真正的分水岭：从”你主动挨个问”，变成”内核主动通知你”。CPU 不再空转，延迟也最低。</p>
+<h2 id="select-的三个麻烦">select 的三个麻烦</h2>
+<p>但 select 用起来有三个具体的麻烦，每个都能逼出下一代。</p>
+<p><strong>麻烦一：放不下。</strong> select 用一个叫 <code>fd_set</code> 的位图存连接，这个位图固定 1024 位。也就是说连接编号超过 1023 就放不进去。一万个连接？对不起，放不下。这不是”慢”，是”装不下”。</p>
+<p><strong>麻烦二：每次都要重新交名单。</strong> 每次调用 select，都得把整个 <code>fd_set</code> 从你的程序拷进内核。哪怕你只盯 3 个连接，也要走一遍这个拷贝。连接越多，每次拷得越多。</p>
+<p><strong>麻烦三：内核挨个查。</strong> 内核拿到位图，不知道你关心哪几个，只能从头到尾扫一遍，看谁就绪了。一万个连接里只有 3 个有数据，它也得查一万个。</p>
+<p>还有一个容易踩的坑：select 返回时会把 <code>fd_set</code> 改写，只剩就绪的那几位。所以下一轮必须重新 <code>FD_ZERO</code>、重新 <code>FD_SET</code>。忘了重建，就永远等不到——这是个经典 bug。</p>
+<h2 id="poll只修了放不下">poll：只修了”放不下”</h2>
+<p>1986 年 poll 出来了。它把位图换成了一个结构体数组：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="c"><code><span class="line"><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">struct</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> pollfd </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fds</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">2</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">];</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fds</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">].fd </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> conn1;  </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fds</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">].events </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> POLLIN;</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fds</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">].fd </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> conn2;  </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">fds</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">].events </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> POLLIN;</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">poll</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(fds</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 2</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> -</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">);</span></span></code></pre>
+<p>数组想开多大开多大，<strong>“放不下”解决了</strong>。而且输入输出分开（<code>events</code> 是你关心的，<code>revents</code> 是内核填的结果），不用每次重建。</p>
+<p>但是——<strong>麻烦二和麻烦三一个都没修。</strong> 每次调用还是要把整个数组拷进内核，内核还是要挨个扫一万个，你回来还是要自己遍历一万个找就绪的。</p>
+<p>所以 poll 只是把 select 的”容量”和”易用性”修好了，<strong>最要命的”每次全量拷贝 + 全量扫描”原封不动。</strong> 连接一多，它和 select 一样慢。</p>
+<h2 id="如果你是内核设计者">如果你是内核设计者</h2>
+<p>现在问题非常具体了，就两条：</p>
+<ol>
+<li>每次都要重新告诉内核”我盯哪些连接”——能不能让它<strong>记住</strong>？</li>
+<li>内核每次都要挨个查一万个——能不能<strong>别查</strong>？</li>
+</ol>
+<p>先别急着看 epoll 的答案。如果你来设计，你会怎么做？</p>
+<p><strong>针对第一条</strong>：让内核记住名单，那我注册一次就够了，之后不用再交。内核得有个数据结构存这些连接，要能快速增、删、查。连接数不定、增删频繁——你会想到用一棵<strong>树</strong>（查找、插入、删除都是 O(log n)）。</p>
+<p><strong>针对第二条</strong>：别每次查，那就在<strong>数据到达的那一刻，顺手记一笔</strong>。数据到内核时本来就要唤醒对应的连接，那就在这时把”这个连接就绪了”记到一个名单上。等我要的时候，直接把这个名单给我，根本不用查。</p>
+<p>你看，这两个想法一出来，epoll 的三个核心部件就全齐了：</p>
+<ul>
+<li>存名单的树 → <strong>红黑树</strong></li>
+<li>数据到达时顺手记一笔 → <strong>回调</strong></li>
+<li>记下来的就绪名单 → <strong>就绪链表</strong></li>
+</ul>
+<p><strong>红黑树、回调、就绪链表，不是三个要背的词，是你刚才那两个问题的答案。</strong></p>
+<h2 id="epoll把三个部件拼起来">epoll：把三个部件拼起来</h2>
+<p>2002 年 Linux 把这套做出来了，就是 epoll。三个调用，正好对应你想的三步：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="c"><code><span class="line"><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> epfd </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> epoll_create1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">0</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">);</span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">                    // 建一个实例</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">epoll_ctl</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(epfd</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> EPOLL_CTL_ADD</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> conn</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> &#x26;</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D7DBE0">ev</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">);</span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">      // 注册一次，内核记住</span></span>
+<span class="line"><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">int</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> n </span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA">=</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic"> epoll_wait</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(epfd</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB"> events</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C"> 128</span><span style="--shiki-light:#212121;--shiki-dark:#D6DEEB">,</span><span style="--shiki-light:#D32F2F;--shiki-dark:#7FDBCA"> -</span><span style="--shiki-light:#1976D2;--shiki-dark:#F78C6C">1</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">);</span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">      // 要的时候，只返回就绪的</span></span></code></pre>
+<ul>
+<li><code>epoll_ctl</code> 把连接加进红黑树，<strong>只交一次</strong>，之后 <code>epoll_wait</code> 不再碰名单。→ 解决麻烦二。</li>
+<li>数据到达时，内核通过回调把该连接挂进就绪链表。→ 解决麻烦三的”查”。</li>
+<li><code>epoll_wait</code> 只看就绪链表：空就睡，不空就把里面的拷出来直接返回。→ 你不用再遍历一万个。</li>
+</ul>
+<p>一万个连接里只有 3 个活跃，epoll 就只处理这 3 个。<strong>这就是它快的全部原因。</strong></p>
+<p>到这里，epoll 为什么快，不用我解释，你自己就能推出来——因为你就是照着问题把它设计出来的。</p>
+<h2 id="epoll-没解决的三件事">epoll 没解决的三件事</h2>
+<p>但别急着觉得 epoll 完美。它有三个边界，理解了才算真懂。</p>
+<p><strong>边界一：它的快有前提。</strong> epoll 快，是因为”就绪的远少于注册的”。如果一万个连接<strong>同时全部活跃</strong>，就绪链表里也是一万个，<code>epoll_wait</code> 要拷一万个，和 poll 一样慢。所以”epoll 比 select 快一百倍”这句话，只在”连接多、活跃少”时成立。</p>
+<p><strong>边界二：它只告诉你”就绪”，不帮你”搬数据”。</strong> <code>epoll_wait</code> 返回”这个连接可读了”，但数据还在内核缓冲区，你还得自己调 <code>read()</code> 把它搬进你的内存——这一步仍然是你干、仍然会阻塞。所以 <strong>epoll 不是异步 IO</strong>，它是”同步 IO + 高效等待”。真正的异步（内核连搬数据都替你做完）是后来的 io_uring、Windows 的 IOCP。</p>
+<p><strong>边界三：边缘触发很容易写错。</strong> epoll 默认”水平触发”：只要还可读，每次都通知你。它还有个”边缘触发”模式：只在”从没数据变有数据”那一刻通知一次。后者事件少、更快，但要求你<strong>一次把数据读干净</strong>（读到返回”没数据了”为止），否则剩下的数据永远躺在那，再也没人通知你。Go 用的就是边缘触发，所以它的读代码里有个循环，读不干净就接着读。</p>
+<h2 id="真正的代价代码没法看了">真正的代价：代码没法看了</h2>
+<p>走到 epoll，效率问题解决了。但回头看，有个东西一路在丢。</p>
+<p>最早的阻塞代码是线性的：读请求 → 查数据库 → 写响应，顺着写下来就行。</p>
+<p>可在 epoll 的事件循环里，一个连接的数据可能分好几次到。你得把”读请求 → 查库 → 写响应”这个流程<strong>拆成几段</strong>，每段之间把进度存到一个结构体里，等下次事件来了再续上。一个本该顺着写的业务，被拆成了状态机。</p>
+<p>这就是为什么早年写高并发服务器那么痛苦：Node.js 的回调地狱、C 语言 epoll 服务器动辄几千行。<strong>每一代都在用”编程复杂度”换”资源效率”。</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>方案</th><th>资源</th><th>代码</th></tr></thead><tbody><tr><td>阻塞 + 多线程</td><td>线程数 = 连接数，扛不住</td><td>最简单，线性</td></tr><tr><td>非阻塞轮询</td><td>省线程</td><td>循环 + 空转</td></tr><tr><td>select / poll / epoll</td><td>一个线程管海量连接</td><td>事件循环 + 状态机，最难</td></tr></tbody></table>
+<p>效率到位了，代码却没法看了。能不能两个都要？</p>
+<h2 id="go把简单还回来">Go：把简单还回来</h2>
+<p>Go 做了一件反方向的事：<strong>让你照第一代的样子写代码，底下跑 epoll 的机制。</strong></p>
+<p>你写的还是线性的：</p>
+<pre class="astro-code astro-code-themes min-light night-owl" style="--shiki-light:#24292eff;--shiki-dark:#d6deeb;--shiki-light-bg:#ffffff;--shiki-dark-bg:#011627; overflow-x: auto;--file-name-offset: -0.75rem;" tabindex="0" data-language="go"><code><span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">conn</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">_</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> ln</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Accept</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">()</span></span>
+<span class="line"><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">n</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">, </span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">_</span><span style="--shiki-light:#D32F2F;--shiki-dark:#C792EA"> :=</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478"> conn</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">.</span><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">Read</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">buf</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">)   </span><span style="--shiki-light:#C2C3C5;--shiki-light-font-style:inherit;--shiki-dark:#637777;--shiki-dark-font-style:italic">// 看起来在"等"</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-light-font-style:inherit;--shiki-dark:#82AAFF;--shiki-dark-font-style:italic">handle</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">(</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">buf</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">[:</span><span style="--shiki-light:#24292EFF;--shiki-dark:#C5E478">n</span><span style="--shiki-light:#24292EFF;--shiki-dark:#D6DEEB">])</span></span></code></pre>
+<p>但 <code>conn.Read</code> 底下不是真的把线程卡死。数据没到时，Go 把当前这个 goroutine 挂起，让线程去跑别的 goroutine；数据到了，epoll 通知 runtime，把那个 goroutine 唤醒接着跑。<strong>“阻塞”从内核层面搬到了用户态。</strong></p>
+<p>于是一个连接一个 goroutine，而 goroutine 初始栈只有 2KB，不是线程的 8MB。一万个连接，线程还是只有几个。</p>
+<p>这不是空话，是实测过的（示例在仓库 <code>examples/go/concurrency/</code>）：</p>
+<ul>
+<li><strong>302 个 goroutine 全部阻塞在 socket 读上</strong>（<code>netpoll-sockets</code>），<code>GOMAXPROCS=2</code>，线程只有 <strong>5</strong> 个，两个 P 全闲着。</li>
+<li>对比 <strong>4 个 goroutine 读文件</strong>（<code>gmp-syscall-handoff</code>），线程从 2 涨到 <strong>7</strong>——因为普通文件不能用 epoll，只能让线程真的陷进内核。</li>
+</ul>
+<p>同样是”阻塞”，socket 上的阻塞几乎不要钱，文件上的阻塞要赔线程。差别就在有没有走 epoll 这条多路复用的路。</p>
+<p>这就是整个 GMP 调度存在的意义：<strong>它是那个”把简单还给你”的实现。</strong></p>
+<h2 id="三个流传很广的错误说法">三个流传很广的错误说法</h2>
+<p>最后纠正三个网上常见、但经不起推敲的说法，面试时尤其要小心。</p>
+<p><strong>说法一：“epoll 是 O(1)。”</strong> 不对。<code>epoll_wait</code> 是 O(就绪数)，<code>epoll_ctl</code> 操作红黑树是 O(log n)。一万个全活跃时它也是 O(一万)。它的优势是”就绪远少于注册”，不是常数时间。</p>
+<p><strong>说法二：“epoll 用 mmap 共享就绪链表，零拷贝。”</strong> 不准确。现代内核里 <code>epoll_wait</code> 是通过 <code>copy_to_user</code> 把就绪事件拷出来的，没有 mmap 共享。真正省掉的是”每次拷贝整个 fd 集合”，不是”零拷贝事件”。</p>
+<p><strong>说法三：“IO 多路复用就是用一个线程管多个连接。”</strong> 没说到点上。非阻塞 IO 早就做到一个线程管多个连接了。多路复用真正复用掉的是<strong>系统调用次数</strong>：把”问一万次”变成”问一次，内核替我筛”。</p>
+<h2 id="一张表收尾">一张表收尾</h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>select</th><th>poll</th><th>epoll</th></tr></thead><tbody><tr><td>年代</td><td>1983</td><td>1986</td><td>2002</td></tr><tr><td>连接上限</td><td>1024</td><td>无</td><td>无</td></tr><tr><td>每次调用拷贝整个集合</td><td>是</td><td>是</td><td>否（注册一次）</td></tr><tr><td>内核怎么找就绪</td><td>全量扫描</td><td>全量扫描</td><td>回调 + 就绪链表</td></tr><tr><td>复杂度</td><td>O(连接数)</td><td>O(连接数)</td><td>O(就绪数)</td></tr><tr><td>触发模式</td><td>水平</td><td>水平</td><td>水平 + 边缘</td></tr><tr><td>跨平台</td><td>全平台</td><td>全平台</td><td>仅 Linux</td></tr></tbody></table>
+<p>一句话串起全文：</p>
+<blockquote><p>CPU 太贵，不能干等 IO → 一个连接一个线程，线程又太贵 → 让一个线程管所有连接，但得解决”怎么知道谁好了” → 从自己挨个问（非阻塞），到交给内核等（select/poll），再到内核记住名单、就绪才通知（epoll）→ 效率够了，代码却没法看 → 最后用用户态调度，把”线性代码”还给你（goroutine）。</p></blockquote>
+<p>每一个名词，都是上一个问题的答案。</p>
+<h2 id="参考资料">参考资料</h2>
+<ul>
+<li><a href="http://www.kegel.com/c10k.html">The C10K problem — Dan Kegel</a></li>
+<li><a href="https://jvns.ca/blog/2017/06/03/async-io-on-linux--select--poll--and-epoll/">Async IO on Linux: select, poll, and epoll — Julia Evans</a></li>
+<li><a href="https://man7.org/linux/man-pages/man7/epoll.7.html">epoll(7) — Linux manual page</a></li>
+<li><a href="https://man7.org/linux/man-pages/man2/select.2.html">select(2) — Linux manual page</a></li>
+<li><a href="https://cloud.tencent.cn/developer/article/1793196">网络 IO 演变发展过程和模型介绍 — 腾讯技术工程</a></li>
+<li><a href="https://developer.aliyun.com/article/1372927">epoll 的实现原理 — 阿里云开发者社区</a></li>
+</ul> </article> <hr class="my-8 border-dashed">  <div id="btt-btn-container" class="fixed inset-e-4 bottom-8 z-50 md:sticky md:inset-e-auto md:float-end md:me-1 translate-y-14 opacity-0 transition duration-500"> <button data-button="back-to-top" class="group bg-background relative px-2 py-1 size-14 rounded-full shadow-xl md:h-8 md:w-fit md:rounded-md md:shadow-none md:focus-visible:rounded-none md:bg-background/35 md:bg-clip-padding md:backdrop-blur-lg"> <span id="progress-indicator" class="absolute inset-0 -z-10 block size-14 scale-110 rounded-full bg-transparent md:hidden md:h-8 md:rounded-md"></span> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block rotate-90 md:hidden" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 12h14M5 12l6 6M5 12l6-6" /></svg> <span class="group-hover:text-accent sr-only text-sm md:not-sr-only"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M12 5v14M16 9l-4-4M8 9l4-4" /></svg> 回到顶部 </span> </button> </div> <script data-astro-rerun>
+  function backToTop() {
+    const rootElement = document.documentElement;
+    const btnContainer = document.querySelector("#btt-btn-container");
+    const backToTopBtn = document.querySelector("[data-button='back-to-top']");
+    const progressIndicator = document.querySelector("#progress-indicator");
+
+    if (!rootElement || !btnContainer || !backToTopBtn || !progressIndicator)
+      return;
+
+    backToTopBtn.addEventListener("click", () => {
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+    });
+
+    let lastVisible = null;
+    function handleScroll() {
+      const scrollTotal = rootElement.scrollHeight - rootElement.clientHeight;
+      const scrollTop = rootElement.scrollTop;
+      const scrollPercent = Math.floor((scrollTop / scrollTotal) * 100);
+
+      progressIndicator.style.setProperty(
+        "background-image",
+        `conic-gradient(var(--accent), var(--accent) ${scrollPercent}%, transparent ${scrollPercent}%)`
+      );
+
+      const isVisible = scrollTop / scrollTotal > 0.3;
+
+      if (isVisible !== lastVisible) {
+        btnContainer.classList.toggle("opacity-100", isVisible);
+        btnContainer.classList.toggle("translate-y-0", isVisible);
+        btnContainer.classList.toggle("opacity-0", !isVisible);
+        btnContainer.classList.toggle("translate-y-14", !isVisible);
+        lastVisible = isVisible;
+      }
+    }
+
+    let ticking = false;
+    document.addEventListener("scroll", () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          handleScroll();
+          ticking = false;
+        });
+        ticking = true;
+      }
+    });
+  }
+  backToTop();
+</script> <ul class="mt-4 mb-8 flex flex-wrap gap-4 sm:my-8"> <li> <a href="/tags/linux/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-1"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> Linux </a> </li><li> <a href="/tags/io模型/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-2"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> IO模型 </a> </li><li> <a href="/tags/网络/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-3"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> 网络 </a> </li><li> <a href="/tags/复习/" class="flex items-center gap-0.5 border-foreground border-b-2 border-dashed hover:border-accent hover:text-accent hover:-mt-0.5 focus-visible:text-accent focus-visible:border-none text-sm" data-astro-transition-scope="astro-36ssibgs-4"> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="opacity-80 size-4" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 9h14M5 15h14M11 4 7 20M17 4l-4 16" /></svg> 复习 </a> </li> </ul>  <hr class="my-8 border-dashed"> <div data-pagefind-ignore class="my-8 grid grid-cols-1 gap-6 sm:grid-cols-2">  <a href="/posts/go/mutex-from-counter-to-lock/" class="flex w-full justify-end gap-1 text-end hover:opacity-75 sm:col-start-2"> <div> <span>下一篇</span> <div class="text-accent/85 text-sm">从 counter++ 到 Mutex：重新理解 Go 的锁</div> </div> <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block flex-none rtl:rotate-180" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M5 12h14M13 18l6-6M13 6l6 6" /></svg> </a> </div> </main> <footer class="app-layout mt-auto"> <div class="border-border flex flex-col items-center justify-between border-t py-6 sm:flex-row-reverse sm:py-4"> <div class="flex flex-wrap items-center gap-1"> <a href="https://github.com/julesChu12/blog-code" title="示例代码仓库" class="group inline-flex items-center gap-1 hover:text-accent p-2 hover:rotate-6 sm:p-1">  <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="inline-block size-6 scale-125 fill-transparent stroke-current stroke-2 opacity-90 group-hover:fill-transparent sm:scale-110" viewBox="0 0 24 24"><path stroke="none" d="M0 0h24v24H0z" /><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21" /></svg> <span class="sr-only">示例代码仓库</span>  </a> </div> <div class="my-2 flex flex-col items-center whitespace-nowrap sm:flex-row"> <span> &#169; 2026</span> <span class="hidden sm:inline">&nbsp;|&nbsp;</span> <span>保留所有权利。</span> </div> </div> </footer>   <script type="module">const c="theme",n="light",o="dark";function s(){const e=localStorage.getItem(c);return e||(window.matchMedia("(prefers-color-scheme: dark)").matches?o:n)}let t=window.__theme?.value??s();function a(){localStorage.setItem(c,t),m()}function m(){const e=document.firstElementChild;e?.setAttribute("data-theme",t),e?.classList.toggle("dark",t===o),document.querySelector("#theme-btn")?.setAttribute("aria-label",t===o?"切换至浅色":"切换至深色");const r=window.getComputedStyle(document.body).backgroundColor;document.querySelector("meta[name='theme-color']")?.setAttribute("content",r)}function d(){m(),document.querySelector("#theme-btn")?.addEventListener("click",()=>{t=t===n?o:n,a()})}d();document.addEventListener("astro:after-swap",d);document.addEventListener("astro:before-swap",e=>{const r=document.querySelector("meta[name='theme-color']")?.getAttribute("content");r&&e.newDocument.querySelector("meta[name='theme-color']")?.setAttribute("content",r)});window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change",({matches:e})=>{t=e?o:n,a()});</script> </body> </html> <script data-astro-rerun>
+  function addHeadingLinks() {
+    const headings = Array.from(
+      document.querySelectorAll("h2, h3, h4, h5, h6")
+    );
+    for (const heading of headings) {
+      heading.classList.add("group");
+      const link = document.createElement("a");
+      link.className =
+        "heading-link ms-2 no-underline opacity-75 md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100";
+      link.href = "#" + heading.id;
+
+      const span = document.createElement("span");
+      span.ariaHidden = "true";
+      span.innerText = "#";
+      link.appendChild(span);
+      heading.appendChild(link);
+    }
+  }
+  addHeadingLinks();
+
+  function attachCopyButtons() {
+    const copyButtonLabel = "复制";
+    const codeBlocks = Array.from(document.querySelectorAll("pre"));
+
+    for (const codeBlock of codeBlocks) {
+      const wrapper = document.createElement("div");
+      wrapper.style.position = "relative";
+
+      const computedStyle = getComputedStyle(codeBlock);
+      const hasFileNameOffset =
+        computedStyle.getPropertyValue("--file-name-offset").trim() !== "";
+
+      const topClass = hasFileNameOffset
+        ? "top-(--file-name-offset)"
+        : "-top-3";
+
+      const copyButton = document.createElement("button");
+      copyButton.className = `copy-code absolute end-3 ${topClass} rounded bg-muted border border-muted px-2 py-1 text-xs leading-4 text-foreground font-medium`;
+      copyButton.innerHTML = copyButtonLabel;
+      codeBlock.setAttribute("tabindex", "0");
+      codeBlock.appendChild(copyButton);
+
+      codeBlock?.parentNode?.insertBefore(wrapper, codeBlock);
+      wrapper.appendChild(codeBlock);
+
+      copyButton.addEventListener("click", async () => {
+        await copyCode(codeBlock, copyButton);
+      });
+    }
+
+    async function copyCode(block, button) {
+      const code = block.querySelector("code");
+      const text = code?.innerText;
+
+      try {
+        await navigator.clipboard.writeText(text ?? "");
+        button.innerText = "已复制";
+      } catch {
+        button.innerText = "请手动复制";
+      }
+
+      setTimeout(() => {
+        button.innerText = copyButtonLabel;
+      }, 700);
+    }
+  }
+  attachCopyButtons();
+
+  /** Accessible image lightbox for article images. */
+  function initLightbox() {
+    const article = document.getElementById("article");
+    if (!article) return;
+
+    const prefersReducedMotion = () =>
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let overlay = null;
+    let lastFocused = null;
+
+    // Defer attribute mutations so they don't push the LCP timestamp.
+    // Event listeners below use delegation and don't need the attributes to exist yet.
+    requestAnimationFrame(() => {
+      const images = Array.from(article.querySelectorAll("img"));
+      for (const image of images) {
+        if (image.closest("a")) continue;
+        image.setAttribute("role", "button");
+        image.setAttribute("tabindex", "0");
+        image.setAttribute("aria-haspopup", "dialog");
+        image.setAttribute(
+          "aria-label",
+          image.alt ? `放大图片：${image.alt}` : "放大图片"
+        );
+      }
+    });
+
+    function open(src, alt, trigger) {
+      if (overlay) return;
+      lastFocused = trigger ?? document.activeElement;
+
+      overlay = document.createElement("div");
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.setAttribute("aria-label", alt ? `图片预览：${alt}` : "图片预览");
+      overlay.className =
+        "fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/70 backdrop-blur-sm opacity-0 transition-opacity duration-200 motion-reduce:transition-none";
+
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.setAttribute("aria-label", "关闭图片预览");
+      closeButton.className =
+        "absolute end-4 top-4 rounded p-2 text-3xl leading-none text-white";
+      closeButton.innerHTML = "&#10005;";
+      closeButton.addEventListener("click", close);
+
+      const image = document.createElement("img");
+      image.src = src;
+      image.alt = "";
+      image.className =
+        "max-h-[90dvh] max-w-[90dvw] cursor-default object-contain";
+
+      overlay.append(closeButton, image);
+      overlay.addEventListener("click", e => {
+        if (e.target === overlay && currentScale <= 1) close();
+      });
+
+      let currentScale = 1;
+      let translateX = 0;
+      let translateY = 0;
+      let initialDist = 0;
+      let initialScale = 1;
+      let panStartX = 0;
+      let panStartY = 0;
+      let panStartTranslateX = 0;
+      let panStartTranslateY = 0;
+      let lastTapTime = 0;
+
+      function applyTransform() {
+        image.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+      }
+
+      function resetTransform() {
+        currentScale = 1;
+        translateX = 0;
+        translateY = 0;
+        image.style.transform = "";
+      }
+
+      overlay.addEventListener(
+        "touchstart",
+        e => {
+          const t = e.touches;
+          if (t.length === 2) {
+            initialDist = Math.hypot(
+              t[1].clientX - t[0].clientX,
+              t[1].clientY - t[0].clientY
+            );
+            initialScale = currentScale;
+          } else if (t.length === 1) {
+            const now = Date.now();
+            if (now - lastTapTime < 300) {
+              e.preventDefault();
+              if (currentScale > 1) {
+                resetTransform();
+              } else {
+                currentScale = 2;
+                translateX = 0;
+                translateY = 0;
+                applyTransform();
+              }
+              lastTapTime = 0;
+              panStartX = t[0].clientX;
+              panStartY = t[0].clientY;
+              panStartTranslateX = translateX;
+              panStartTranslateY = translateY;
+            } else {
+              lastTapTime = now;
+              if (currentScale > 1) {
+                panStartX = t[0].clientX;
+                panStartY = t[0].clientY;
+                panStartTranslateX = translateX;
+                panStartTranslateY = translateY;
+              }
+            }
+          }
+        },
+        { passive: false }
+      );
+
+      overlay.addEventListener(
+        "touchmove",
+        e => {
+          const t = e.touches;
+          if (t.length === 2) {
+            e.preventDefault();
+            const dist = Math.hypot(
+              t[1].clientX - t[0].clientX,
+              t[1].clientY - t[0].clientY
+            );
+            currentScale = Math.min(
+              4,
+              Math.max(1, initialScale * (dist / initialDist))
+            );
+            applyTransform();
+          } else if (t.length === 1) {
+            if (currentScale > 1) {
+              e.preventDefault();
+              translateX =
+                panStartTranslateX + (t[0].clientX - panStartX) / currentScale;
+              translateY =
+                panStartTranslateY + (t[0].clientY - panStartY) / currentScale;
+              const maxX = Math.max(
+                0,
+                (image.clientWidth - overlay.clientWidth / currentScale) / 2
+              );
+              const maxY = Math.max(
+                0,
+                (image.clientHeight - overlay.clientHeight / currentScale) / 2
+              );
+              translateX = Math.min(maxX, Math.max(-maxX, translateX));
+              translateY = Math.min(maxY, Math.max(-maxY, translateY));
+              applyTransform();
+            } else {
+              e.preventDefault();
+            }
+          }
+        },
+        { passive: false }
+      );
+
+      overlay.addEventListener("touchend", e => {
+        if (e.touches.length === 0 && currentScale <= 1.05) {
+          resetTransform();
+        }
+      });
+
+      overlay.addEventListener("touchcancel", e => {
+        if (e.touches.length === 0 && currentScale <= 1.05) {
+          resetTransform();
+        }
+      });
+
+      document.body.appendChild(overlay);
+      document.body.style.overflow = "hidden";
+      document.addEventListener("keydown", onKeyDown);
+      window.__closeLightbox = close;
+
+      requestAnimationFrame(() => overlay?.classList.add("opacity-100"));
+      closeButton.focus();
+    }
+
+    function close() {
+      if (!overlay) return;
+      const el = overlay;
+      overlay = null;
+      window.__closeLightbox = null;
+
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = "";
+      lastFocused?.focus();
+      lastFocused = null;
+
+      if (prefersReducedMotion()) {
+        el.remove();
+        return;
+      }
+      const remove = () => el.remove();
+      el.addEventListener("transitionend", remove, { once: true });
+      setTimeout(remove, 250); // fallback in case transitionend never fires
+      el.classList.remove("opacity-100");
+    }
+
+    function onKeyDown(e) {
+      if (e.key === "Escape") {
+        close();
+      } else if (e.key === "Tab") {
+        trapFocus(e);
+      }
+    }
+
+    // Keep keyboard focus inside the open dialog.
+    function trapFocus(e) {
+      if (!overlay) return;
+      const focusables = overlay.querySelectorAll(
+        'a[href], button, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+
+    function triggerFromEvent(e) {
+      const image = e.target.closest("img");
+      if (!image || !article.contains(image) || image.closest("a")) return null;
+      return image;
+    }
+
+    function activate(image) {
+      open(image.currentSrc || image.src, image.alt, image);
+    }
+
+    article.addEventListener("click", e => {
+      const image = triggerFromEvent(e);
+      if (!image) return;
+      e.preventDefault();
+      activate(image);
+    });
+
+    article.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+      const image = triggerFromEvent(e);
+      if (!image) return;
+      e.preventDefault();
+      activate(image);
+    });
+  }
+  initLightbox();
+
+  if (!window.__lightboxSwapBound) {
+    window.__lightboxSwapBound = true;
+    document.addEventListener("astro:before-swap", () =>
+      window.__closeLightbox?.()
+    );
+  }
+
+  document.addEventListener("astro:after-swap", () =>
+    window.scrollTo({ left: 0, top: 0, behavior: "instant" })
+  );
+</script>
